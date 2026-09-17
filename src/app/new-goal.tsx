@@ -16,7 +16,9 @@ import { StatusBar } from 'expo-status-bar';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import {
+  EDIT_LOCK_MESSAGE,
   formatRepeatSummary,
+  isTimeEditLocked,
   padDatePart,
   parseGoalDateParts,
   parseGoalTime,
@@ -354,6 +356,10 @@ export default function NewGoalScreen() {
   }, [restrictTimeToNow, draftHourIndex, nowHour, nowMinute]);
 
   function handleOpenTimeModal() {
+    if (isEditing && editingGoal && isTimeEditLocked(editingGoal)) {
+      Alert.alert('SERT KOÇ', EDIT_LOCK_MESSAGE);
+      return;
+    }
     let hour = selectedTime ? selectedTime.hour : restrictTimeToNow ? nowHour : 9;
     let minute = selectedTime ? selectedTime.minute : restrictTimeToNow ? nowMinute : 0;
     if (restrictTimeToNow && (hour < nowHour || (hour === nowHour && minute < nowMinute))) {
@@ -407,9 +413,13 @@ export default function NewGoalScreen() {
         : '';
 
     if (isEditing && editingGoal) {
+      if (isTimeEditLocked(editingGoal) && timeValue !== editingGoal.time) {
+        Alert.alert('SERT KOÇ', EDIT_LOCK_MESSAGE);
+        return;
+      }
       updateGoal(editingGoal.id, {
         title: title.trim(),
-        time: timeValue,
+        time: isTimeEditLocked(editingGoal) ? editingGoal.time : timeValue,
         endDate: editingGoal.repeat ? endValue : editingGoal.endDate,
       });
       router.back();
@@ -437,8 +447,9 @@ export default function NewGoalScreen() {
     ? `${pad(selectedEndDate.day)}/${pad(selectedEndDate.month)}/${selectedEndDate.year}`
     : '📅 Bitiş Tarihi (opsiyonel)';
   const timeButtonLabel = selectedTime
-    ? `🕒 ${pad(selectedTime.hour)}:${pad(selectedTime.minute)}`
+    ? `${pad(selectedTime.hour)}:${pad(selectedTime.minute)}`
     : '🕒 Saat Seç';
+  const timeLocked = Boolean(isEditing && editingGoal && isTimeEditLocked(editingGoal));
 
   const daysInMonth = getDaysInMonth(calendarYear, calendarMonth);
   const leadingBlanks = getMondayFirstWeekday(calendarYear, calendarMonth);
@@ -500,17 +511,20 @@ export default function NewGoalScreen() {
                   styles.timingButton,
                   !isEditing && styles.rowItem,
                   selectedTime && styles.timingButtonActive,
+                  timeLocked && styles.timingButtonLocked,
                 ]}
                 activeOpacity={0.75}
                 onPress={handleOpenTimeModal}>
                 <Text style={styles.timingButtonLabel}>{timeButtonLabel}</Text>
               </TouchableOpacity>
             </View>
-            {!isEditing && (
+            {timeLocked ? (
+              <Text style={styles.warningText}>{EDIT_LOCK_MESSAGE}</Text>
+            ) : !isEditing ? (
               <Text style={styles.warningText}>
                 ⚠ Bugünü seçebilirsin, ama geçmiş bir günü ya da bugünün geçmiş bir saatini seçemezsin.
               </Text>
-            )}
+            ) : null}
           </View>
 
           {!isEditing && (
@@ -836,6 +850,10 @@ const styles = StyleSheet.create({
   },
   timingButtonActive: {
     borderColor: '#C1121F',
+  },
+  timingButtonLocked: {
+    borderColor: '#7A1414',
+    opacity: 0.7,
   },
   timingButtonLabel: {
     color: '#E4E4E4',

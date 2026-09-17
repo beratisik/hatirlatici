@@ -7,6 +7,8 @@ import { useRouter } from 'expo-router';
 import {
   describeArchiveReason,
   formatRepeatSummary,
+  isFinished,
+  isPaused,
   useGoals,
   type Goal,
 } from '@/context/GoalContext';
@@ -40,6 +42,7 @@ export default function ArchiveScreen() {
           <ArchivedGoalCard
             goal={item}
             onRestore={() => restoreGoal(item.id)}
+            onReport={() => router.push({ pathname: '/report-card', params: { id: item.id } })}
             onOpenMenu={() => setMenuGoal(item)}
           />
         )}
@@ -47,7 +50,7 @@ export default function ArchiveScreen() {
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyTitle}>ARŞİV BOŞ</Text>
             <Text style={styles.emptySubtitle}>
-              Kaydırıp arşivlediğin veya pasife çektiğin görevler burada listelenir.
+              Duraklattığın hedefler serisi bozulmadan burada bekler. Bitirdiklerin karne olarak durur.
             </Text>
           </View>
         }
@@ -73,15 +76,19 @@ export default function ArchiveScreen() {
 function ArchivedGoalCard({
   goal,
   onRestore,
+  onReport,
   onOpenMenu,
 }: {
   goal: Goal;
   onRestore: () => void;
+  onReport: () => void;
   onOpenMenu: () => void;
 }) {
   const hasSchedule = !!(goal.date || goal.time);
   const repeatLabel = formatRepeatSummary(goal.repeat);
   const reason = describeArchiveReason(goal.archiveReason);
+  const paused = isPaused(goal);
+  const finished = isFinished(goal);
 
   return (
     <View style={styles.card}>
@@ -109,11 +116,22 @@ function ArchivedGoalCard({
             <Text style={styles.badgeText}>Bitiş {goal.endDate}</Text>
           </View>
         )}
+        {goal.streak > 0 && (
+          <View style={styles.badge}>
+            <Text style={styles.streakBadgeText}>🔥 {goal.streak} seri korundu</Text>
+          </View>
+        )}
       </View>
 
-      <TouchableOpacity style={styles.restoreButton} activeOpacity={0.85} onPress={onRestore}>
-        <Text style={styles.restoreButtonLabel}>GERİ YÜKLE</Text>
-      </TouchableOpacity>
+      {finished ? (
+        <TouchableOpacity style={styles.restoreButton} activeOpacity={0.85} onPress={onReport}>
+          <Text style={styles.restoreButtonLabel}>KARNE</Text>
+        </TouchableOpacity>
+      ) : (
+        <TouchableOpacity style={styles.restoreButton} activeOpacity={0.85} onPress={onRestore}>
+          <Text style={styles.restoreButtonLabel}>{paused ? 'DEVAM ETTİR' : 'GERİ YÜKLE'}</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -234,17 +252,21 @@ const styles = StyleSheet.create({
   },
   restoreButton: {
     marginTop: 8,
-    backgroundColor: '#1A1A1A',
-    borderWidth: 1,
-    borderColor: '#3A3A3A',
+    backgroundColor: '#C1121F',
+    borderWidth: 0,
     borderRadius: 10,
-    paddingVertical: 10,
+    paddingVertical: 12,
     alignItems: 'center',
   },
   restoreButtonLabel: {
-    color: '#F5C400',
+    color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '800',
     letterSpacing: 0.8,
+  },
+  streakBadgeText: {
+    color: '#C1121F',
+    fontSize: 12,
+    fontWeight: '800',
   },
 });

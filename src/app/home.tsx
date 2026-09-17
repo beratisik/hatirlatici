@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -7,21 +7,34 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import {
   formatRepeatSummary,
+  getConfrontationMessage,
   isCompletedToday,
   isHandledToday,
+  isTimeEditLocked,
   OUTCOME_POINTS,
-  STREAK_COACH_TITLE,
   useGoals,
   type Goal,
   type GoalOutcome,
 } from '@/context/GoalContext';
-import { confirmDeleteGoal, GoalMenuButton, GoalMenuSheet } from '@/components/goal-menu';
+import { ConfrontationModal } from '@/components/confrontation-modal';
+import {
+  confirmDeleteGoal,
+  confirmFinishGoal,
+  confirmPauseGoal,
+  CoachLockModal,
+  GoalMenuButton,
+  GoalMenuSheet,
+} from '@/components/goal-menu';
 
 export default function HomeScreen() {
   const router = useRouter();
   const { profile: profileParam } = useLocalSearchParams<{ profile?: string }>();
-  const { goals, completeGoal, archiveGoal, deleteGoal, score, profile } = useGoals();
+  const { goals, completeGoal, archiveGoal, pauseGoal, finishGoal, deleteGoal, score, profile } = useGoals();
   const [menuGoal, setMenuGoal] = useState<Goal | null>(null);
+  const [lockWarning, setLockWarning] = useState(false);
+  const [confrontation, setConfrontation] = useState<{ streak: number; message: string } | null>(
+    null,
+  );
 
   const activeGoals = goals.filter((goal) => !goal.archived);
   const archivedCount = goals.filter((goal) => goal.archived).length;
@@ -29,6 +42,10 @@ export default function HomeScreen() {
 
   function handleAddGoal() {
     router.push({ pathname: '/new-goal', params: { profile: profileKey } });
+  }
+
+  function handleCoachPlan() {
+    router.push('/coach-plan');
   }
 
   function handleOpenProfile() {
@@ -39,11 +56,25 @@ export default function HomeScreen() {
     router.push('/archive');
   }
 
+  function handleComplete(goal: Goal) {
+    handleOutcome(goal.id, 'onTime');
+  }
+
   function handleOutcome(id: string, outcome: GoalOutcome) {
     const result = completeGoal(id, outcome);
-    if (result.bonus && result.message) {
-      Alert.alert(STREAK_COACH_TITLE, result.message);
+    if (!result.applied) return;
+    if (outcome === 'missed') return;
+    setConfrontation({
+      streak: result.streak,
+      message: result.message ?? getConfrontationMessage(result.streak, result.bonus),
+    });
+  }
+
+  function handleOpenMenu(goal: Goal) {
+    if (isTimeEditLocked(goal)) {
+      setLockWarning(true);
     }
+    setMenuGoal(goal);
   }
 
   return (
@@ -85,7 +116,7 @@ export default function HomeScreen() {
 
       {activeGoals.length > 0 && (
         <Text style={styles.swipeHint}>
-          ← Kartı sola kaydır: Yapmadım / Arşivle · Kartı sağa kaydır: Zamanında / Geç yaptım →
+          ← Sola kaydır: Yapmadım / Arşivle · Sağa kaydır: Yaptım / Geç yaptım →
         </Text>
       )}
 
@@ -96,9 +127,10 @@ export default function HomeScreen() {
         renderItem={({ item }) => (
           <GoalCard
             goal={item}
+            onComplete={() => handleComplete(item)}
             onOutcome={handleOutcome}
             onArchive={(id) => archiveGoal(id)}
-            onOpenMenu={() => setMenuGoal(item)}
+            onOpenMenu={() => handleOpenMenu(item)}
           />
         )}
         ListEmptyComponent={
@@ -106,33 +138,60 @@ export default function HomeScreen() {
             <View style={styles.emptyContainer}>
               <Text style={styles.emptyTitle}>AKTİF HEDEFİN YOK</Text>
               <Text style={styles.emptySubtitle}>
-                Pasife çektiğin görevler kaybolmadı. Üstteki Arşiv butonundan bak.
+                Duraklattığın veya bitirdiğin görevler Arşiv’de. Serin silinmedi.
               </Text>
             </View>
           ) : (
             <View style={styles.emptyContainer}>
               <Text style={styles.emptyTitle}>HENÜZ HEDEFİN YOK!</Text>
               <Text style={styles.emptySubtitle}>
-                Ertelemeyi bırak ve sağ alttaki düğmeyle ilk hedefini oluştur.
+                Hedef ekle ya da koçtan bir plan al. Bahanen hazırsa dokunma.
               </Text>
             </View>
           )
         }
       />
 
-      <TouchableOpacity style={styles.fab} activeOpacity={0.8} onPress={handleAddGoal}>
-        <Text style={styles.fabIcon}>+</Text>
-      </TouchableOpacity>
+      <View style={styles.fabRow}>
+        <TouchableOpacity style={styles.coachFab} activeOpacity={0.85} onPress={handleCoachPlan}>
+          <Text style={styles.coachFabLabel}>KOÇTAN PLAN AL</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.fab} activeOpacity={0.8} onPress={handleAddGoal}>
+          <Text style={styles.fabIcon}>+</Text>
+        </TouchableOpacity>
+      </View>
 
       <GoalMenuSheet
         visible={!!menuGoal}
         onClose={() => setMenuGoal(null)}
         onEdit={
           menuGoal
-            ? () =>
+            ? () => {
+                if (isTimeEditLocked(menuGoal)) {
+                  setLockWarning(true);
+                  return;
+                }
                 router.push({
                   pathname: '/new-goal',
                   params: { profile: profileKey, id: menuGoal.id },
+                });
+              }
+            : undefined
+        }
+        onPause={
+          menuGoal
+            ? () =>
+                confirmPauseGoal(menuGoal.title, () => pauseGoal(menuGoal.id))
+            : undefined
+        }
+        onFinish={
+          menuGoal
+            ? () =>
+                confirmFinishGoal(menuGoal.title, () => {
+                  const finished = finishGoal(menuGoal.id);
+                  if (finished) {
+                    router.push({ pathname: '/report-card', params: { id: finished.id } });
+                  }
                 })
             : undefined
         }
@@ -141,17 +200,28 @@ export default function HomeScreen() {
           confirmDeleteGoal(menuGoal.title, () => deleteGoal(menuGoal.id));
         }}
       />
+
+      <CoachLockModal visible={lockWarning} onClose={() => setLockWarning(false)} />
+
+      <ConfrontationModal
+        visible={!!confrontation}
+        streak={confrontation?.streak ?? 0}
+        message={confrontation?.message ?? ''}
+        onClose={() => setConfrontation(null)}
+      />
     </SafeAreaView>
   );
 }
 
 function GoalCard({
   goal,
+  onComplete,
   onOutcome,
   onArchive,
   onOpenMenu,
 }: {
   goal: Goal;
+  onComplete: () => void;
   onOutcome: (id: string, outcome: GoalOutcome) => void;
   onArchive: (id: string) => void;
   onOpenMenu: () => void;
@@ -162,6 +232,14 @@ function GoalCard({
   const handledToday = isHandledToday(goal);
   const completedToday = isCompletedToday(goal);
   const missedToday = handledToday && goal.lastOutcome === 'missed';
+  const slotLabel =
+    goal.timeSlot === 'sabah'
+      ? 'Sabah'
+      : goal.timeSlot === 'ogle'
+        ? 'Öğle'
+        : goal.timeSlot === 'aksam'
+          ? 'Akşam'
+          : null;
 
   function runAction(action: () => void) {
     swipeableRef.current?.close();
@@ -183,7 +261,7 @@ function GoalCard({
                   style={[styles.actionButton, styles.actionOnTime]}
                   activeOpacity={0.85}
                   onPress={() => runAction(() => onOutcome(goal.id, 'onTime'))}>
-                  <Text style={styles.actionLabel}>ZAMANINDA{'\n'}YAPTIM</Text>
+                  <Text style={styles.actionLabel}>YAPTIM</Text>
                   <Text style={styles.actionPoints}>+{OUTCOME_POINTS.onTime}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -242,6 +320,11 @@ function GoalCard({
               </Text>
             </View>
           )}
+          {slotLabel && (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{slotLabel}</Text>
+            </View>
+          )}
           <View style={styles.badge}>
             <Text style={styles.badgeText}>{repeatLabel}</Text>
           </View>
@@ -256,6 +339,12 @@ function GoalCard({
             </View>
           )}
         </View>
+
+        {!handledToday && (
+          <TouchableOpacity style={styles.completeButton} activeOpacity={0.85} onPress={onComplete}>
+            <Text style={styles.completeButtonLabel}>TAMAMLA</Text>
+          </TouchableOpacity>
+        )}
       </View>
     </Swipeable>
   );
@@ -358,7 +447,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingHorizontal: 20,
-    paddingBottom: 120,
+    paddingBottom: 140,
     gap: 14,
   },
   emptyListContent: {
@@ -446,12 +535,23 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   streakBadgeText: {
-    color: '#F5C400',
+    color: '#C1121F',
     fontSize: 12,
     fontWeight: '800',
   },
-
-  // --- Kaydırma (swipe) aksiyonları ---
+  completeButton: {
+    marginTop: 6,
+    backgroundColor: '#C1121F',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  completeButtonLabel: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 1.2,
+  },
   leftActions: {
     flexDirection: 'row',
     marginRight: -1,
@@ -492,15 +592,38 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '900',
   },
-
-  fab: {
+  fabRow: {
     position: 'absolute',
     right: 24,
     bottom: 32,
+    left: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 10,
+  },
+  coachFab: {
+    flex: 1,
+    height: 52,
+    borderRadius: 10,
+    backgroundColor: '#141414',
+    borderWidth: 1,
+    borderColor: '#C1121F',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+  },
+  coachFabLabel: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+  fab: {
     width: 60,
     height: 60,
     borderRadius: 30,
-    backgroundColor: '#F5C400',
+    backgroundColor: '#C1121F',
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000000',
@@ -510,7 +633,7 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   fabIcon: {
-    color: '#050505',
+    color: '#FFFFFF',
     fontSize: 32,
     fontWeight: '800',
     lineHeight: 34,

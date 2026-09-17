@@ -26,6 +26,17 @@ export const STREAK_COACH_TITLE = '5 GÜNLÜK SERİ';
 export const STREAK_COACH_MESSAGE =
   '5 gün dayandın. Kutlama yok. Yarın bozarsan bu da yalan olur. Devam et ya da sil baştan.';
 
+export function getConfrontationMessage(streak: number, bonus = false): string {
+  if (bonus) return STREAK_COACH_MESSAGE;
+  if (streak <= 0) return 'Sıfır. Bugün işaretlemezsen yarın da işaretlemeyeceksin.';
+  if (streak === 1) return 'Bir gün. Alkış yok. Yarın gelmezsen bu da yalandı.';
+  if (streak === 2) return 'İki gün. Henüz kimse değilsin. Zinciri kırma.';
+  if (streak === 3) return 'Üç gün. Bahanelerin sıraya girdi. Görme onları.';
+  if (streak === 4) return 'Dört. Yarın beş. Yarın kaçarsan dört gün de çöp.';
+  if (streak < 10) return `${streak} gün. Kimse umursamıyor. Sen umursamazsan biter.`;
+  return `${streak} günlük seri. Makine gibi. Şimdi bozmak en kolayı. Bozma.`;
+}
+
 export type RepeatUnit = 'saat' | 'gun' | 'hafta' | 'ay';
 
 export type RepeatConfig = {
@@ -40,9 +51,18 @@ const UNIT_LOCATIVE: Record<RepeatUnit, string> = {
   ay: 'ayda',
 };
 
-export type ArchiveReason = 'onTime' | 'late' | 'missed' | 'manual' | 'ended';
+export type ArchiveReason =
+  | 'onTime'
+  | 'late'
+  | 'missed'
+  | 'manual'
+  | 'ended'
+  | 'paused'
+  | 'finished';
 export type GoalOutcome = 'onTime' | 'late' | 'missed';
 export type Gender = 'kadin' | 'erkek' | 'belirtmek_istemiyorum';
+export type PlanCategory = 'kitap' | 'yuruyus' | 'vucut' | 'muzik' | 'dil' | 'akademik';
+export type TimeSlot = 'sabah' | 'ogle' | 'aksam';
 
 export const GENDER_OPTIONS: { value: Gender; label: string }[] = [
   { value: 'kadin', label: 'Kadın' },
@@ -67,6 +87,14 @@ export type Goal = {
   streak: number;
   archived: boolean;
   archiveReason: ArchiveReason | null;
+  category: PlanCategory | null;
+  timeSlot: TimeSlot | null;
+  sessionMinutes: number;
+  completionCount: number;
+  pointsEarned: number;
+  pagesRead: number;
+  startedAt: string | null;
+  coachReason: string;
 };
 
 export type CompleteResult = {
@@ -120,6 +148,25 @@ export function parseGoalTime(value: string): { hour: number; minute: number } |
   return { hour: Number(match[1]), minute: Number(match[2]) };
 }
 
+export const EDIT_LOCK_MESSAGE = 'Bahanelere yer yok, süre çok azaldı!';
+const EDIT_LOCK_WINDOW_MS = 60 * 60 * 1000;
+
+export function getGoalTargetDate(goal: Goal): Date | null {
+  const time = parseGoalTime(goal.time);
+  if (!time) return null;
+
+  const dated = parseGoalDate(goal.date);
+  const target = goal.repeat || !dated ? new Date() : new Date(dated);
+  target.setHours(time.hour, time.minute, 0, 0);
+  return target;
+}
+
+export function isTimeEditLocked(goal: Goal): boolean {
+  const target = getGoalTargetDate(goal);
+  if (!target) return false;
+  return target.getTime() - Date.now() <= EDIT_LOCK_WINDOW_MS;
+}
+
 export function parseGoalDateParts(
   value: string,
 ): { day: number; month: number; year: number } | null {
@@ -167,10 +214,35 @@ export function describeArchiveReason(reason: ArchiveReason | null): { label: st
       return { label: '✕ Yapılmadı', color: '#FF5C5C' };
     case 'ended':
       return { label: '⏱ Süresi doldu', color: '#8A8A8A' };
+    case 'paused':
+      return { label: '⏸ Duraklatıldı', color: '#D98C2B' };
+    case 'finished':
+      return { label: '🎓 Bitirildi', color: '#3DDC84' };
     case 'manual':
     default:
       return { label: '🗄 Arşivlendi', color: '#8A8A8A' };
   }
+}
+
+export function isPaused(goal: Goal): boolean {
+  return goal.archived && goal.archiveReason === 'paused';
+}
+
+export function isFinished(goal: Goal): boolean {
+  return goal.archived && goal.archiveReason === 'finished';
+}
+
+export function sessionLength(goal: Goal): number {
+  return goal.sessionMinutes > 0 ? goal.sessionMinutes : 15;
+}
+
+export function goalHoursSpent(goal: Goal): number {
+  return Math.round(((goal.completionCount * sessionLength(goal)) / 60) * 10) / 10;
+}
+
+export function goalBooksRead(goal: Goal): number {
+  if (goal.category !== 'kitap') return 0;
+  return Math.floor(goal.pagesRead / 220);
 }
 
 export type Rank = {
@@ -240,10 +312,28 @@ type PersistedState = {
 
 type NewGoalInput = Omit<
   Goal,
-  'id' | 'archived' | 'archiveReason' | 'lastCompletedDate' | 'lastOutcome' | 'streak'
->;
+  | 'id'
+  | 'archived'
+  | 'archiveReason'
+  | 'lastCompletedDate'
+  | 'lastOutcome'
+  | 'streak'
+  | 'completionCount'
+  | 'pointsEarned'
+  | 'pagesRead'
+  | 'startedAt'
+  | 'category'
+  | 'timeSlot'
+  | 'sessionMinutes'
+  | 'coachReason'
+> & {
+  category?: PlanCategory | null;
+  timeSlot?: TimeSlot | null;
+  sessionMinutes?: number;
+  coachReason?: string;
+};
 
-type GoalPatch = Partial<Pick<Goal, 'title' | 'time' | 'endDate'>>;
+type GoalPatch = Partial<Pick<Goal, 'title' | 'time' | 'endDate' | 'timeSlot'>>;
 
 type GoalContextValue = {
   isReady: boolean;
@@ -256,6 +346,8 @@ type GoalContextValue = {
   deleteGoal: (id: string) => void;
   completeGoal: (id: string, outcome: GoalOutcome) => CompleteResult;
   archiveGoal: (id: string) => void;
+  pauseGoal: (id: string) => void;
+  finishGoal: (id: string) => Goal | null;
   restoreGoal: (id: string) => void;
 
   user: User | null;
@@ -300,7 +392,30 @@ function normalizeGoals(raw: unknown): Goal[] {
       streak: typeof item.streak === 'number' ? item.streak : 0,
       archived: Boolean(item.archived),
       archiveReason: item.archiveReason ?? null,
+      category: isPlanCategory(item.category) ? item.category : null,
+      timeSlot: isTimeSlot(item.timeSlot) ? item.timeSlot : null,
+      sessionMinutes: typeof item.sessionMinutes === 'number' ? item.sessionMinutes : 0,
+      completionCount: typeof item.completionCount === 'number' ? item.completionCount : 0,
+      pointsEarned: typeof item.pointsEarned === 'number' ? item.pointsEarned : 0,
+      pagesRead: typeof item.pagesRead === 'number' ? item.pagesRead : 0,
+      startedAt: typeof item.startedAt === 'string' ? item.startedAt : null,
+      coachReason: typeof item.coachReason === 'string' ? item.coachReason : '',
     }));
+}
+
+function isPlanCategory(value: unknown): value is PlanCategory {
+  return (
+    value === 'kitap' ||
+    value === 'yuruyus' ||
+    value === 'vucut' ||
+    value === 'muzik' ||
+    value === 'dil' ||
+    value === 'akademik'
+  );
+}
+
+function isTimeSlot(value: unknown): value is TimeSlot {
+  return value === 'sabah' || value === 'ogle' || value === 'aksam';
 }
 
 function resetBrokenStreaks(goals: Goal[]): Goal[] {
@@ -308,7 +423,9 @@ function resetBrokenStreaks(goals: Goal[]): Goal[] {
   const yesterday = yesterdayIso();
   let changed = false;
   const next = goals.map((goal) => {
-    if (goal.archived || !goal.repeat || goal.streak <= 0) return goal;
+    if (goal.archived || goal.archiveReason === 'paused' || !goal.repeat || goal.streak <= 0) {
+      return goal;
+    }
     const last = goal.lastCompletedDate;
     if (!last || last === today || last === yesterday) return goal;
     changed = true;
@@ -412,6 +529,14 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       streak: 0,
       archived: false,
       archiveReason: null,
+      category: goal.category ?? null,
+      timeSlot: goal.timeSlot ?? null,
+      sessionMinutes: goal.sessionMinutes ?? 0,
+      completionCount: 0,
+      pointsEarned: 0,
+      pagesRead: 0,
+      startedAt: todayIso(),
+      coachReason: goal.coachReason ?? '',
     };
     setGoals((prev) => maintainGoals([...prev, created]));
     void scheduleGoalAlarm(created);
@@ -456,19 +581,30 @@ export function GoalProvider({ children }: { children: ReactNode }) {
 
     const bonus = goal.repeat && outcome === 'onTime' && nextStreak === STREAK_BONUS_AT;
     const points = bonus ? STREAK_BONUS_POINTS : OUTCOME_POINTS[outcome];
+    const counted = outcome !== 'missed';
+    const extraPages =
+      counted && goal.category === 'kitap'
+        ? Math.max(6, Math.round(sessionLength(goal) * 0.7))
+        : 0;
 
     setGoals((prev) =>
       prev.map((item) => {
         if (item.id !== id) return item;
+        const stats = {
+          completionCount: counted ? item.completionCount + 1 : item.completionCount,
+          pointsEarned: item.pointsEarned + points,
+          pagesRead: item.pagesRead + extraPages,
+        };
         if (item.repeat) {
           return {
             ...item,
+            ...stats,
             lastCompletedDate: day,
             lastOutcome: outcome,
             streak: nextStreak,
           };
         }
-        return { ...item, archived: true, archiveReason: outcome };
+        return { ...item, ...stats, archived: true, archiveReason: outcome };
       }),
     );
     setScore((prev) => prev + points);
@@ -486,7 +622,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       points,
       streak: nextStreak,
       bonus: Boolean(bonus),
-      message: bonus ? STREAK_COACH_MESSAGE : null,
+      message: getConfrontationMessage(nextStreak, Boolean(bonus)),
     };
   }, []);
 
@@ -497,14 +633,39 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
+  const pauseGoal = useCallback((id: string) => {
+    void cancelGoalAlarm(id);
+    setGoals((prev) =>
+      prev.map((g) => (g.id === id ? { ...g, archived: true, archiveReason: 'paused' } : g)),
+    );
+  }, []);
+
+  const finishGoal = useCallback((id: string): Goal | null => {
+    const current = goalsRef.current.find((g) => g.id === id);
+    if (!current) return null;
+    void cancelGoalAlarm(id);
+    const next = { ...current, archived: true, archiveReason: 'finished' as const };
+    setGoals((prev) => prev.map((g) => (g.id === id ? next : g)));
+    return next;
+  }, []);
+
   const restoreGoal = useCallback((id: string) => {
     const current = goalsRef.current.find((g) => g.id === id);
     if (!current) return;
-    const next = maintainGoals([{ ...current, archived: false, archiveReason: null }])[0];
+    const today = todayIso();
+    const preservedDate =
+      current.archiveReason === 'paused' && current.lastCompletedDate !== today
+        ? yesterdayIso()
+        : current.lastCompletedDate;
+    const restored = {
+      ...current,
+      archived: false,
+      archiveReason: null,
+      lastCompletedDate: preservedDate,
+    };
+    const next = maintainGoals([restored])[0];
     setGoals((prev) =>
-      maintainGoals(
-        prev.map((g) => (g.id === id ? { ...g, archived: false, archiveReason: null } : g)),
-      ),
+      maintainGoals(prev.map((g) => (g.id === id ? restored : g))),
     );
     if (next.archived) {
       void cancelGoalAlarm(id);
@@ -559,6 +720,8 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       deleteGoal,
       completeGoal,
       archiveGoal,
+      pauseGoal,
+      finishGoal,
       restoreGoal,
       user,
       setUser,
@@ -579,6 +742,8 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       deleteGoal,
       completeGoal,
       archiveGoal,
+      pauseGoal,
+      finishGoal,
       restoreGoal,
       user,
       setUser,
