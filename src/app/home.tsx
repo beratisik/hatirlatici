@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react';
-import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useMemo, useRef, useState } from 'react';
+import { FlatList, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -17,6 +17,7 @@ import {
   type GoalOutcome,
 } from '@/context/GoalContext';
 import { ConfrontationModal } from '@/components/confrontation-modal';
+import { formatDayHeading, HomeCalendar } from '@/components/home-calendar';
 import {
   confirmDeleteGoal,
   confirmFinishGoal,
@@ -25,6 +26,7 @@ import {
   GoalMenuButton,
   GoalMenuSheet,
 } from '@/components/goal-menu';
+import { goalsOnDay, startOfToday } from '@/lib/schedule';
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -35,8 +37,18 @@ export default function HomeScreen() {
   const [confrontation, setConfrontation] = useState<{ streak: number; message: string } | null>(
     null,
   );
+  const [selectedDay, setSelectedDay] = useState(() => startOfToday());
+  const [calendarVisible, setCalendarVisible] = useState(false);
 
   const activeGoals = goals.filter((goal) => !goal.archived);
+  const dayGoals = useMemo(() => {
+    return goalsOnDay(activeGoals, selectedDay).slice().sort((a, b) => {
+      if (a.time && b.time) return a.time.localeCompare(b.time);
+      if (a.time) return -1;
+      if (b.time) return 1;
+      return a.title.localeCompare(b.title);
+    });
+  }, [activeGoals, selectedDay]);
   const archivedCount = goals.filter((goal) => goal.archived).length;
   const profileKey = profileParam || profile || '';
 
@@ -54,6 +66,11 @@ export default function HomeScreen() {
 
   function handleOpenArchive() {
     router.push('/archive');
+  }
+
+  function handleOpenCalendar() {
+    setSelectedDay(startOfToday());
+    setCalendarVisible(true);
   }
 
   function handleComplete(goal: Goal) {
@@ -156,10 +173,63 @@ export default function HomeScreen() {
         <TouchableOpacity style={styles.coachFab} activeOpacity={0.85} onPress={handleCoachPlan}>
           <Text style={styles.coachFabLabel}>KOÇTAN PLAN AL</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.fab} activeOpacity={0.8} onPress={handleAddGoal}>
-          <Text style={styles.fabIcon}>+</Text>
-        </TouchableOpacity>
+        <View style={styles.fabColumn}>
+          <TouchableOpacity
+            style={styles.calendarFab}
+            activeOpacity={0.85}
+            onPress={handleOpenCalendar}>
+            <Text style={styles.calendarFabIcon}>📅</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.fab} activeOpacity={0.8} onPress={handleAddGoal}>
+            <Text style={styles.fabIcon}>+</Text>
+          </TouchableOpacity>
+        </View>
       </View>
+
+      <Modal
+        visible={calendarVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setCalendarVisible(false)}>
+        <View style={styles.calendarOverlay}>
+          <TouchableOpacity
+            style={styles.calendarBackdrop}
+            activeOpacity={1}
+            onPress={() => setCalendarVisible(false)}
+          />
+          <View style={styles.calendarSheet}>
+            <View style={styles.calendarSheetHeader}>
+              <Text style={styles.calendarSheetTitle}>TAKVİM</Text>
+              <TouchableOpacity activeOpacity={0.7} onPress={() => setCalendarVisible(false)}>
+                <Text style={styles.calendarClose}>Kapat</Text>
+              </TouchableOpacity>
+            </View>
+            <HomeCalendar
+              goals={activeGoals}
+              selectedDay={selectedDay}
+              onSelectDay={setSelectedDay}
+            />
+            <Text style={styles.dayHeading}>
+              {formatDayHeading(selectedDay)}
+              {dayGoals.length > 0 ? ` · ${dayGoals.length} iş` : ''}
+            </Text>
+            <ScrollView style={styles.dayList} contentContainerStyle={styles.dayListContent}>
+              {dayGoals.length === 0 ? (
+                <Text style={styles.dayEmpty}>Bu günde işin yok.</Text>
+              ) : (
+                dayGoals.map((goal) => (
+                  <View key={goal.id} style={styles.dayItem}>
+                    <Text style={styles.dayItemTitle}>{goal.title}</Text>
+                    <Text style={styles.dayItemMeta}>
+                      {[goal.time, formatRepeatSummary(goal.repeat)].filter(Boolean).join(' · ')}
+                    </Text>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       <GoalMenuSheet
         visible={!!menuGoal}
@@ -445,6 +515,80 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingBottom: 10,
   },
+  calendarOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  calendarBackdrop: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: 'rgba(0,0,0,0.62)',
+  },
+  calendarSheet: {
+    backgroundColor: '#0B0B0B',
+    borderTopWidth: 1,
+    borderColor: '#2A2A2A',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 28,
+    maxHeight: '82%',
+    gap: 12,
+  },
+  calendarSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+  },
+  calendarSheetTitle: {
+    color: '#F2F2F2',
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
+  calendarClose: {
+    color: '#C1121F',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  dayHeading: {
+    color: '#F2F2F2',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 1,
+    paddingHorizontal: 4,
+  },
+  dayList: {
+    maxHeight: 280,
+  },
+  dayListContent: {
+    gap: 8,
+    paddingBottom: 8,
+  },
+  dayEmpty: {
+    color: '#8A8A8A',
+    fontSize: 14,
+    paddingHorizontal: 4,
+    paddingVertical: 8,
+  },
+  dayItem: {
+    backgroundColor: '#141414',
+    borderWidth: 1,
+    borderColor: '#2A2A2A',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 4,
+  },
+  dayItemTitle: {
+    color: '#F5F5F5',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  dayItemMeta: {
+    color: '#8A8A8A',
+    fontSize: 12,
+    fontWeight: '500',
+  },
   listContent: {
     paddingHorizontal: 20,
     paddingBottom: 140,
@@ -598,9 +742,26 @@ const styles = StyleSheet.create({
     bottom: 32,
     left: 24,
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-end',
     justifyContent: 'flex-end',
     gap: 10,
+  },
+  fabColumn: {
+    alignItems: 'center',
+    gap: 10,
+  },
+  calendarFab: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#141414',
+    borderWidth: 1,
+    borderColor: '#C1121F',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calendarFabIcon: {
+    fontSize: 20,
   },
   coachFab: {
     flex: 1,

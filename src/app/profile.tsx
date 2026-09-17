@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import {
   Alert,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -17,10 +18,12 @@ import { describeGender, getRank, useUser } from '@/context/GoalContext';
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const { user, score, updateAvatar } = useUser();
+  const { user, score, updateAvatar, logout } = useUser();
   const rank = getRank(score);
 
   const [picking, setPicking] = useState(false);
+  const [avatarMenuVisible, setAvatarMenuVisible] = useState(false);
+  const [viewerVisible, setViewerVisible] = useState(false);
 
   const displayName = user?.name || 'Kullanıcı';
   const displayEmail = user?.email || '—';
@@ -29,6 +32,25 @@ export default function ProfileScreen() {
 
   function handleGoBack() {
     router.back();
+  }
+
+  function handleLogout() {
+    logout();
+    router.replace('/');
+  }
+
+  function handleAvatarPress() {
+    setAvatarMenuVisible(true);
+  }
+
+  function handleViewAvatar() {
+    setAvatarMenuVisible(false);
+    setViewerVisible(true);
+  }
+
+  function handleUploadAvatar() {
+    setAvatarMenuVisible(false);
+    void handlePickAvatar();
   }
 
   async function handlePickAvatar() {
@@ -69,7 +91,7 @@ export default function ProfileScreen() {
         <Text style={styles.title}>PROFİL</Text>
 
         <View style={styles.userCard}>
-          <TouchableOpacity style={styles.avatarHit} activeOpacity={0.8} onPress={handlePickAvatar}>
+          <TouchableOpacity style={styles.avatarHit} activeOpacity={0.8} onPress={handleAvatarPress}>
             {avatarUri ? (
               <Image source={{ uri: avatarUri }} style={styles.avatarImage} contentFit="cover" />
             ) : (
@@ -85,7 +107,7 @@ export default function ProfileScreen() {
             <Text style={styles.userName}>{displayName}</Text>
             <Text style={styles.userEmail}>{displayEmail}</Text>
             <Text style={styles.userGender}>{describeGender(user?.gender ?? null)}</Text>
-            <Text style={styles.avatarHint}>Fotoğraf yüklemek için avatara dokun</Text>
+            <Text style={styles.avatarHint}>Görüntüle veya yeni fotoğraf yükle</Text>
           </View>
         </View>
 
@@ -109,7 +131,63 @@ export default function ProfileScreen() {
           </View>
           <Text style={styles.securityChevron}>›</Text>
         </TouchableOpacity>
+
+        <TouchableOpacity style={styles.logoutButton} activeOpacity={0.85} onPress={handleLogout}>
+          <Text style={styles.logoutButtonLabel}>ÇIKIŞ YAP</Text>
+        </TouchableOpacity>
       </ScrollView>
+
+      <Modal
+        visible={avatarMenuVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAvatarMenuVisible(false)}>
+        <View style={styles.menuOverlay}>
+          <TouchableOpacity
+            style={styles.menuBackdrop}
+            activeOpacity={1}
+            onPress={() => setAvatarMenuVisible(false)}
+          />
+          <View style={styles.menuSheet}>
+            <TouchableOpacity style={styles.menuItem} activeOpacity={0.8} onPress={handleViewAvatar}>
+              <Text style={styles.menuItemLabel}>Profil resmini görüntüle</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.menuItem}
+              activeOpacity={0.8}
+              onPress={handleUploadAvatar}>
+              <Text style={styles.menuItemLabel}>Yeni profil resmi yükle</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.menuItem}
+              activeOpacity={0.8}
+              onPress={() => setAvatarMenuVisible(false)}>
+              <Text style={styles.menuCancelLabel}>Vazgeç</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={viewerVisible}
+        animationType="fade"
+        onRequestClose={() => setViewerVisible(false)}>
+        <View style={styles.viewerScreen}>
+          <TouchableOpacity
+            style={styles.viewerClose}
+            activeOpacity={0.7}
+            onPress={() => setViewerVisible(false)}>
+            <Text style={styles.viewerCloseText}>‹ Kapat</Text>
+          </TouchableOpacity>
+          {avatarUri ? (
+            <Image source={{ uri: avatarUri }} style={styles.viewerImage} contentFit="contain" />
+          ) : (
+            <View style={styles.viewerPlaceholder}>
+              <Text style={styles.viewerPlaceholderText}>{initial}</Text>
+            </View>
+          )}
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -293,5 +371,87 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: '300',
     lineHeight: 28,
+  },
+  logoutButton: {
+    marginTop: 'auto',
+    backgroundColor: '#C1121F',
+    borderRadius: 10,
+    paddingVertical: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logoutButtonLabel: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  menuOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  menuBackdrop: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  menuSheet: {
+    backgroundColor: '#141414',
+    borderTopWidth: 1,
+    borderColor: '#2A2A2A',
+    paddingBottom: 24,
+    paddingTop: 8,
+  },
+  menuItem: {
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+  },
+  menuItemLabel: {
+    color: '#F5F5F5',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  menuCancelLabel: {
+    color: '#8A8A8A',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  viewerScreen: {
+    flex: 1,
+    backgroundColor: '#050505',
+    paddingHorizontal: 24,
+    paddingTop: 52,
+    paddingBottom: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewerClose: {
+    position: 'absolute',
+    top: 52,
+    left: 24,
+    zIndex: 2,
+    paddingVertical: 6,
+    paddingRight: 12,
+  },
+  viewerCloseText: {
+    color: '#B5B5B5',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  viewerImage: {
+    width: '100%',
+    height: '70%',
+  },
+  viewerPlaceholder: {
+    width: 220,
+    height: 220,
+    borderRadius: 110,
+    backgroundColor: '#C1121F',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewerPlaceholderText: {
+    color: '#FFFFFF',
+    fontSize: 84,
+    fontWeight: '800',
   },
 });
