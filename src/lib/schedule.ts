@@ -25,6 +25,34 @@ export function addDays(value: Date, amount: number): Date {
   return next;
 }
 
+export function startOfMonth(value: Date): Date {
+  const day = startOfDay(value);
+  day.setDate(1);
+  return day;
+}
+
+export function addMonths(value: Date, amount: number): Date {
+  const current = startOfDay(value);
+  const dayOfMonth = current.getDate();
+  const next = startOfMonth(current);
+  next.setMonth(next.getMonth() + amount);
+  const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+  next.setDate(Math.min(dayOfMonth, lastDay));
+  return next;
+}
+
+export function monthGridDays(monthDate: Date): (Date | null)[] {
+  const first = startOfMonth(monthDate);
+  const leading = (first.getDay() + 6) % 7;
+  const daysInMonth = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+  const cells: (Date | null)[] = [
+    ...Array(leading).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, index) => addDays(first, index)),
+  ];
+  while (cells.length % 7 !== 0) cells.push(null);
+  return cells;
+}
+
 export function isSameDay(a: Date, b: Date): boolean {
   return (
     a.getFullYear() === b.getFullYear() &&

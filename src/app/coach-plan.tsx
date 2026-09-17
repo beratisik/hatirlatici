@@ -11,13 +11,19 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useRouter } from 'expo-router';
 
-import { useGoals, type PlanCategory, type TimeSlot } from '@/context/GoalContext';
+import { addMinutesToClock, useGoals, type PlanCategory, type TimeSlot } from '@/context/GoalContext';
 import {
   BOOK_Q1_OPTIONS,
   BOOK_Q2_OPTIONS,
   PLAN_CATEGORIES,
   TIME_SLOTS,
+  WALK_Q1_OPTIONS,
+  WALK_Q2_OPTIONS,
+  WALK_Q3_OPTIONS,
+  analyzeBookReading,
+  analyzeWalking,
   buildCoachGoal,
+  hasIntakeQuestions,
   recommendedSlot,
   sessionMinutesForPlan,
 } from '@/lib/coach';
@@ -33,35 +39,85 @@ export default function CoachPlanScreen() {
   const [booksLast6Months, setBooksLast6Months] = useState<string | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [reason, setReason] = useState('');
+  const [walkFrequency, setWalkFrequency] = useState<string | null>(null);
+  const [walkCapacityId, setWalkCapacityId] = useState<string | null>(null);
+  const [walkSlotPref, setWalkSlotPref] = useState<TimeSlot | null>(null);
   const [slot, setSlot] = useState<TimeSlot | null>(null);
 
-  const suggestedSlot = useMemo(() => {
-    if (!booksLast6Months || !focusId) return 'ogle' as TimeSlot;
-    return recommendedSlot(booksLast6Months, focusId);
-  }, [booksLast6Months, focusId]);
+  const bookAnalysis = useMemo(() => {
+    if (category !== 'kitap' || !booksLast6Months || !focusId) return null;
+    return analyzeBookReading(booksLast6Months, focusId, reason);
+  }, [category, booksLast6Months, focusId, reason]);
 
-  const minutes = category ? sessionMinutesForPlan(category, focusId ?? undefined) : 20;
+  const walkAnalysis = useMemo(() => {
+    if (category !== 'yuruyus' || !walkFrequency || !walkCapacityId || !walkSlotPref) return null;
+    return analyzeWalking(walkFrequency, walkCapacityId, walkSlotPref);
+  }, [category, walkFrequency, walkCapacityId, walkSlotPref]);
+
+  const analysis = category === 'kitap' ? bookAnalysis : category === 'yuruyus' ? walkAnalysis : null;
+
+  const suggestedSlot = useMemo(() => {
+    if (analysis?.recommendedSlot) return analysis.recommendedSlot;
+    if (booksLast6Months && focusId) return recommendedSlot(booksLast6Months, focusId);
+    return 'ogle' as TimeSlot;
+  }, [analysis, booksLast6Months, focusId]);
+
+  const minutes = analysis?.sessionMinutes
+    ?? (category && !hasIntakeQuestions(category) ? sessionMinutesForPlan(category) : 15);
   const bookQuestionsReady = !!booksLast6Months && !!focusId && reason.trim().length > 0;
+  const walkQuestionsReady = !!walkFrequency && !!walkCapacityId && !!walkSlotPref;
+  const questionsReady = category === 'yuruyus' ? walkQuestionsReady : bookQuestionsReady;
 
   function handleCategory(next: PlanCategory) {
     setCategory(next);
     setSlot(null);
-    if (next === 'kitap') {
+    setBooksLast6Months(null);
+    setFocusId(null);
+    setReason('');
+    setWalkFrequency(null);
+    setWalkCapacityId(null);
+    setWalkSlotPref(null);
+    if (hasIntakeQuestions(next)) {
       setStep('questions');
       return;
     }
     setStep('slot');
   }
 
+  function handleBack() {
+    if (step === 'slot' && hasIntakeQuestions(category)) {
+      setStep('questions');
+      return;
+    }
+    if (step === 'questions') {
+      setStep('category');
+      return;
+    }
+    router.back();
+  }
+
   function handleCreate() {
     if (!category) return;
-    const chosenSlot = slot ?? (category === 'kitap' ? suggestedSlot : 'sabah');
+    const chosenSlot = slot ?? (hasIntakeQuestions(category) ? suggestedSlot : 'sabah');
     addGoal(
       buildCoachGoal({
         category,
         slot: chosenSlot,
         sessionMinutes: minutes,
-        coachReason: category === 'kitap' ? reason : '',
+        coachReason:
+          category === 'kitap'
+            ? reason
+            : category === 'yuruyus' && walkFrequency && walkCapacityId && walkSlotPref
+              ? [
+                  WALK_Q1_OPTIONS.find((item) => item.id === walkFrequency)?.label,
+                  WALK_Q2_OPTIONS.find((item) => item.id === walkCapacityId)?.label,
+                  WALK_Q3_OPTIONS.find((item) => item.id === walkSlotPref)?.label,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')
+              : '',
+        programDays: analysis?.programDays,
+        analysisSummary: analysis?.summary,
       }),
     );
     router.replace('/home');
@@ -72,14 +128,17 @@ export default function CoachPlanScreen() {
       <StatusBar style="light" />
 
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backHit} activeOpacity={0.7} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backHit} activeOpacity={0.7} onPress={handleBack}>
           <Text style={styles.backText}>‹ Geri</Text>
         </TouchableOpacity>
         <Text style={styles.title}>KOÇTAN PLAN AL</Text>
         <Text style={styles.subtitle}>
           {step === 'category' && 'Neyi düzeltmek istiyorsun?'}
           {step === 'questions' && 'Cevapların planı belirler. Yalan söyleme.'}
-          {step === 'slot' && 'Saati seç. Sonra yine değiştirebilirsin.'}
+          {step === 'slot' &&
+            (hasIntakeQuestions(category)
+              ? 'Cevapların analiz edildi. Başlangıç ve bitiş saati buradan çıkar.'
+              : 'Saati seç. Sonra yine değiştirebilirsin.')}
         </Text>
       </View>
 
@@ -99,7 +158,7 @@ export default function CoachPlanScreen() {
           </View>
         )}
 
-        {step === 'questions' && (
+        {step === 'questions' && category === 'kitap' && (
           <View style={styles.section}>
             <Text style={styles.question}>Son 6 ayda ne kadar kitap okudun?</Text>
             <View style={styles.options}>
@@ -136,9 +195,60 @@ export default function CoachPlanScreen() {
             />
 
             <TouchableOpacity
-              style={[styles.primary, !bookQuestionsReady && styles.primaryDisabled]}
+              style={[styles.primary, !questionsReady && styles.primaryDisabled]}
               activeOpacity={0.85}
-              disabled={!bookQuestionsReady}
+              disabled={!questionsReady}
+              onPress={() => {
+                setSlot(suggestedSlot);
+                setStep('slot');
+              }}>
+              <Text style={styles.primaryLabel}>PLANI GÖR</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {step === 'questions' && category === 'yuruyus' && (
+          <View style={styles.section}>
+            <Text style={styles.question}>Son 1 ayda ne sıklıkla yürüdün?</Text>
+            <View style={styles.options}>
+              {WALK_Q1_OPTIONS.map((item) => (
+                <ChoiceChip
+                  key={item.id}
+                  label={item.label}
+                  selected={walkFrequency === item.id}
+                  onPress={() => setWalkFrequency(item.id)}
+                />
+              ))}
+            </View>
+
+            <Text style={styles.question}>Durmadan, mola vermeden kaç dakika yürüyebilirsin?</Text>
+            <View style={styles.options}>
+              {WALK_Q2_OPTIONS.map((item) => (
+                <ChoiceChip
+                  key={item.id}
+                  label={item.label}
+                  selected={walkCapacityId === item.id}
+                  onPress={() => setWalkCapacityId(item.id)}
+                />
+              ))}
+            </View>
+
+            <Text style={styles.question}>Günün hangi diliminde bahanen en zayıf?</Text>
+            <View style={styles.options}>
+              {WALK_Q3_OPTIONS.map((item) => (
+                <ChoiceChip
+                  key={item.id}
+                  label={item.label}
+                  selected={walkSlotPref === item.id}
+                  onPress={() => setWalkSlotPref(item.id)}
+                />
+              ))}
+            </View>
+
+            <TouchableOpacity
+              style={[styles.primary, !questionsReady && styles.primaryDisabled]}
+              activeOpacity={0.85}
+              disabled={!questionsReady}
               onPress={() => {
                 setSlot(suggestedSlot);
                 setStep('slot');
@@ -150,12 +260,17 @@ export default function CoachPlanScreen() {
 
         {step === 'slot' && category && (
           <View style={styles.section}>
-            <Text style={styles.planSummary}>
-              {minutes} dakikalık günlük plan. Saatleri sonra düzenleyebilirsin.
-            </Text>
+            {analysis ? (
+              <Text style={styles.planSummary}>{analysis.summary}</Text>
+            ) : (
+              <Text style={styles.planSummary}>
+                {minutes} dakikalık günlük plan. Saatleri sonra düzenleyebilirsin.
+              </Text>
+            )}
             {TIME_SLOTS.map((item) => {
               const selected = (slot ?? suggestedSlot) === item.id;
-              const recommended = category === 'kitap' && item.id === suggestedSlot;
+              const recommended = hasIntakeQuestions(category) && item.id === suggestedSlot;
+              const endTime = addMinutesToClock(item.time, minutes);
               return (
                 <TouchableOpacity
                   key={item.id}
@@ -164,9 +279,13 @@ export default function CoachPlanScreen() {
                   onPress={() => setSlot(item.id)}>
                   <View style={styles.slotTop}>
                     <Text style={styles.slotLabel}>{item.label}</Text>
-                    <Text style={styles.slotTime}>{item.time}</Text>
+                    <Text style={styles.slotTime}>
+                      {item.time}–{endTime}
+                    </Text>
                   </View>
-                  <Text style={styles.slotHint}>{item.hint}</Text>
+                  <Text style={styles.slotHint}>
+                    {item.hint} · {minutes} dk
+                  </Text>
                   {recommended && <Text style={styles.recommended}>KOÇUN ÖNERİSİ</Text>}
                 </TouchableOpacity>
               );

@@ -80,6 +80,7 @@ export type Goal = {
   description: string;
   date: string;
   time: string;
+  endTime: string;
   repeat: RepeatConfig | null;
   endDate: string;
   lastCompletedDate: string | null;
@@ -146,6 +147,19 @@ export function parseGoalTime(value: string): { hour: number; minute: number } |
   const match = /^(\d{2}):(\d{2})$/.exec(value);
   if (!match) return null;
   return { hour: Number(match[1]), minute: Number(match[2]) };
+}
+
+export function addMinutesToClock(time: string, minutes: number): string {
+  const parsed = parseGoalTime(time);
+  if (!parsed) return '';
+  const total = parsed.hour * 60 + parsed.minute + Math.max(0, minutes);
+  const wrapped = ((total % (24 * 60)) + 24 * 60) % (24 * 60);
+  return `${padDatePart(Math.floor(wrapped / 60))}:${padDatePart(wrapped % 60)}`;
+}
+
+export function formatTimeRange(start: string, end: string): string {
+  if (start && end) return `${start}–${end}`;
+  return start;
 }
 
 export const EDIT_LOCK_MESSAGE = 'Bahanelere yer yok, süre çok azaldı!';
@@ -326,14 +340,16 @@ type NewGoalInput = Omit<
   | 'timeSlot'
   | 'sessionMinutes'
   | 'coachReason'
+  | 'endTime'
 > & {
   category?: PlanCategory | null;
   timeSlot?: TimeSlot | null;
   sessionMinutes?: number;
   coachReason?: string;
+  endTime?: string;
 };
 
-type GoalPatch = Partial<Pick<Goal, 'title' | 'time' | 'endDate' | 'timeSlot'>>;
+type GoalPatch = Partial<Pick<Goal, 'title' | 'time' | 'endDate' | 'endTime' | 'timeSlot'>>;
 
 type GoalContextValue = {
   isReady: boolean;
@@ -387,6 +403,12 @@ function normalizeGoals(raw: unknown): Goal[] {
     .map((item) => ({
       ...item,
       endDate: typeof item.endDate === 'string' ? item.endDate : '',
+      endTime:
+        typeof item.endTime === 'string' && item.endTime
+          ? item.endTime
+          : item.time && typeof item.sessionMinutes === 'number' && item.sessionMinutes > 0
+            ? addMinutesToClock(item.time, item.sessionMinutes)
+            : '',
       lastCompletedDate: typeof item.lastCompletedDate === 'string' ? item.lastCompletedDate : null,
       lastOutcome: item.lastOutcome ?? null,
       streak: typeof item.streak === 'number' ? item.streak : 0,
@@ -532,6 +554,11 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       category: goal.category ?? null,
       timeSlot: goal.timeSlot ?? null,
       sessionMinutes: goal.sessionMinutes ?? 0,
+      endTime:
+        goal.endTime ??
+        (goal.time && (goal.sessionMinutes ?? 0) > 0
+          ? addMinutesToClock(goal.time, goal.sessionMinutes ?? 0)
+          : ''),
       completionCount: 0,
       pointsEarned: 0,
       pagesRead: 0,
@@ -546,6 +573,9 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     const current = goalsRef.current.find((item) => item.id === id);
     if (!current) return;
     const next = { ...current, ...patch };
+    if (patch.time && !patch.endTime && current.sessionMinutes > 0) {
+      next.endTime = addMinutesToClock(next.time, current.sessionMinutes);
+    }
     setGoals((prev) => maintainGoals(prev.map((item) => (item.id === id ? next : item))));
     void scheduleGoalAlarm(next);
   }, []);

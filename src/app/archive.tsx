@@ -7,6 +7,7 @@ import { useRouter } from 'expo-router';
 import {
   describeArchiveReason,
   formatRepeatSummary,
+  formatTimeRange,
   isFinished,
   isPaused,
   useGoals,
@@ -105,7 +106,9 @@ function ArchivedGoalCard({
       <View style={styles.cardFooter}>
         {hasSchedule && (
           <View style={styles.badge}>
-            <Text style={styles.badgeText}>{[goal.date, goal.time].filter(Boolean).join(' • ')}</Text>
+            <Text style={styles.badgeText}>
+              {[goal.date, formatTimeRange(goal.time, goal.endTime)].filter(Boolean).join(' • ')}
+            </Text>
           </View>
         )}
         <View style={styles.badge}>

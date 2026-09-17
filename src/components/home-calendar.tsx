@@ -2,12 +2,12 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { padDatePart, type Goal } from '@/context/GoalContext';
 import {
-  addDays,
+  addMonths,
   goalsOnDay,
   isSameDay,
+  monthGridDays,
+  startOfMonth,
   startOfToday,
-  startOfWeekMonday,
-  weekDays,
 } from '@/lib/schedule';
 
 const WEEKDAY_LABELS = ['Pt', 'Sa', 'Ça', 'Pe', 'Cu', 'Ct', 'Pz'];
@@ -30,12 +30,17 @@ export function formatDayHeading(day: Date): string {
   return `${padDatePart(day.getDate())} ${MONTH_NAMES[day.getMonth()].toUpperCase()} ${day.getFullYear()}`;
 }
 
-function weekLabel(weekStart: Date): string {
-  const weekEnd = addDays(weekStart, 6);
-  if (weekStart.getMonth() === weekEnd.getMonth()) {
-    return `${weekStart.getDate()}–${weekEnd.getDate()} ${MONTH_NAMES[weekStart.getMonth()]}`;
+function monthLabel(day: Date): string {
+  return `${MONTH_NAMES[day.getMonth()]} ${day.getFullYear()}`;
+}
+
+function shiftMonth(selectedDay: Date, amount: number): Date {
+  const nextMonth = addMonths(startOfMonth(selectedDay), amount);
+  const today = startOfToday();
+  if (today.getFullYear() === nextMonth.getFullYear() && today.getMonth() === nextMonth.getMonth()) {
+    return today;
   }
-  return `${weekStart.getDate()} ${MONTH_NAMES[weekStart.getMonth()]} – ${weekEnd.getDate()} ${MONTH_NAMES[weekEnd.getMonth()]}`;
+  return nextMonth;
 }
 
 export function HomeCalendar({
@@ -48,43 +53,50 @@ export function HomeCalendar({
   onSelectDay: (day: Date) => void;
 }) {
   const today = startOfToday();
-  const weekStart = startOfWeekMonday(selectedDay);
-  const days = weekDays(weekStart);
+  const cells = monthGridDays(selectedDay);
 
   return (
     <View style={styles.wrap}>
-      <View style={styles.header}>
-        <View style={styles.navRow}>
-          <TouchableOpacity
-            style={styles.navHit}
-            activeOpacity={0.7}
-            onPress={() => onSelectDay(addDays(selectedDay, -7))}>
-            <Text style={styles.navText}>‹</Text>
-          </TouchableOpacity>
-          <Text style={styles.weekLabel}>{weekLabel(weekStart)}</Text>
-          <TouchableOpacity
-            style={styles.navHit}
-            activeOpacity={0.7}
-            onPress={() => onSelectDay(addDays(selectedDay, 7))}>
-            <Text style={styles.navText}>›</Text>
-          </TouchableOpacity>
-        </View>
+      <View style={styles.navRow}>
+        <TouchableOpacity
+          style={styles.navHit}
+          activeOpacity={0.7}
+          onPress={() => onSelectDay(shiftMonth(selectedDay, -1))}>
+          <Text style={styles.navText}>‹</Text>
+        </TouchableOpacity>
+        <Text style={styles.monthLabel}>{monthLabel(selectedDay)}</Text>
+        <TouchableOpacity
+          style={styles.navHit}
+          activeOpacity={0.7}
+          onPress={() => onSelectDay(shiftMonth(selectedDay, 1))}>
+          <Text style={styles.navText}>›</Text>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.weekRow}>
-        {days.map((day, index) => {
+        {WEEKDAY_LABELS.map((label) => (
+          <View key={label} style={styles.weekCell}>
+            <Text style={styles.weekday}>{label}</Text>
+          </View>
+        ))}
+      </View>
+
+      <View style={styles.grid}>
+        {cells.map((day, index) => {
+          if (!day) {
+            return <View key={`empty-${index}`} style={styles.dayHit} />;
+          }
+
           const selected = isSameDay(day, selectedDay);
           const isToday = isSameDay(day, today);
-          const count = goalsOnDay(goals, day).length;
+          const hasGoals = goalsOnDay(goals, day).length > 0;
+
           return (
             <TouchableOpacity
               key={day.toISOString()}
               style={styles.dayHit}
               activeOpacity={0.8}
               onPress={() => onSelectDay(day)}>
-              <Text style={[styles.weekday, selected && styles.weekdaySelected]}>
-                {WEEKDAY_LABELS[index]}
-              </Text>
               <View
                 style={[
                   styles.dayCircle,
@@ -100,7 +112,7 @@ export function HomeCalendar({
                   {day.getDate()}
                 </Text>
               </View>
-              <View style={[styles.dot, count > 0 ? styles.dotActive : styles.dotEmpty]} />
+              <View style={[styles.dot, hasGoals ? styles.dotActive : styles.dotEmpty]} />
             </TouchableOpacity>
           );
         })}
@@ -122,18 +134,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#2A2A2A',
     borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingTop: 14,
-    paddingBottom: 12,
-    gap: 12,
-  },
-  header: {
-    paddingHorizontal: 4,
+    paddingHorizontal: 10,
+    paddingTop: 12,
+    paddingBottom: 10,
+    gap: 8,
   },
   navRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    paddingHorizontal: 4,
   },
   navHit: {
     width: 36,
@@ -146,32 +156,38 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: '700',
   },
-  weekLabel: {
+  monthLabel: {
     color: '#F2F2F2',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '800',
   },
   weekRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
   },
-  dayHit: {
-    flex: 1,
+  weekCell: {
+    width: `${100 / 7}%`,
     alignItems: 'center',
-    gap: 6,
+    paddingBottom: 4,
   },
   weekday: {
     color: '#6B6B6B',
     fontSize: 11,
     fontWeight: '700',
   },
-  weekdaySelected: {
-    color: '#C1121F',
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  dayHit: {
+    width: `${100 / 7}%`,
+    alignItems: 'center',
+    paddingVertical: 4,
+    gap: 3,
   },
   dayCircle: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
@@ -186,7 +202,7 @@ const styles = StyleSheet.create({
   },
   dayNumber: {
     color: '#E4E4E4',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
   },
   dayNumberToday: {

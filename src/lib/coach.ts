@@ -1,4 +1,5 @@
 import {
+  addMinutesToClock,
   padDatePart,
   startOfToday,
   type PlanCategory,
@@ -29,15 +30,41 @@ export const BOOK_Q1_OPTIONS = [
 ] as const;
 
 export const BOOK_Q2_OPTIONS = [
-  { id: '10', label: '10 dakika', minutes: 10 },
+  { id: '15', label: '15 dakika', minutes: 15 },
   { id: '20', label: '20 dakika', minutes: 20 },
   { id: '30', label: '30 dakika', minutes: 30 },
   { id: '45', label: '45+ dakika', minutes: 45 },
 ] as const;
 
+export const WALK_Q1_OPTIONS = [
+  { id: '0', label: 'Hiç' },
+  { id: '1-2', label: 'Haftada 1–2' },
+  { id: '3-4', label: 'Haftada 3–4' },
+  { id: 'her-gun', label: 'Neredeyse her gün' },
+] as const;
+
+export const WALK_Q2_OPTIONS = [
+  { id: '15', label: '15 dakika', minutes: 15 },
+  { id: '20', label: '20 dakika', minutes: 20 },
+  { id: '30', label: '30 dakika', minutes: 30 },
+  { id: '45', label: '45+ dakika', minutes: 45 },
+] as const;
+
+export const WALK_Q3_OPTIONS: { id: TimeSlot; label: string }[] = [
+  { id: 'sabah', label: 'Sabah' },
+  { id: 'ogle', label: 'Öğle' },
+  { id: 'aksam', label: 'Akşam' },
+];
+
+export const INTAKE_CATEGORIES: PlanCategory[] = ['kitap', 'yuruyus'];
+
+export function hasIntakeQuestions(category: PlanCategory | null): boolean {
+  return !!category && INTAKE_CATEGORIES.includes(category);
+}
+
 const DEFAULT_MINUTES: Record<PlanCategory, number> = {
-  kitap: 20,
-  yuruyus: 25,
+  kitap: 15,
+  yuruyus: 15,
   vucut: 40,
   muzik: 25,
   dil: 20,
@@ -58,16 +85,141 @@ export function categoryLabel(category: PlanCategory | null): string {
 }
 
 export function recommendedSlot(booksLast6Months: string, focusId: string): TimeSlot {
-  if (focusId === '10' || booksLast6Months === '0') return 'aksam';
+  if (focusId === '15' || booksLast6Months === '0') return 'aksam';
   if (focusId === '45') return 'sabah';
   return 'ogle';
 }
 
-export function sessionMinutesForPlan(category: PlanCategory, focusId?: string): number {
+export type CoachPlanAnalysis = {
+  sessionMinutes: number;
+  programDays: number;
+  recommendedSlot: TimeSlot;
+  summary: string;
+};
+
+export type BookPlanAnalysis = CoachPlanAnalysis;
+
+export function analyzeBookReading(
+  booksLast6Months: string,
+  focusId: string,
+  reason: string,
+): BookPlanAnalysis {
+  const capacity = Math.max(
+    15,
+    BOOK_Q2_OPTIONS.find((item) => item.id === focusId)?.minutes ?? 15,
+  );
+
+  let minutes = 15;
+  let habitLine = 'Alışkanlığın yok. 15 dakikadan başlıyoruz.';
+  if (booksLast6Months === '1-2') {
+    minutes = 20;
+    habitLine = 'Az okumuşsun. 20 dakikalık oturumla devam.';
+  } else if (booksLast6Months === '3-5') {
+    minutes = 25;
+    habitLine = 'Tempo var. 25 dakika oturacaksın.';
+  } else if (booksLast6Months === '6+') {
+    minutes = 30;
+    habitLine = 'Okuyorsun. 30 dakikayı hak ediyorsun ama kaçış yok.';
+  }
+
+  minutes = Math.max(15, Math.min(minutes, capacity));
+  if (capacity === 15) {
+    minutes = 15;
+    habitLine = 'Odak süren kısa. 15 dakikanın altına inilmez.';
+  } else if (capacity > minutes) {
+    minutes = Math.min(capacity, minutes + 5);
+  }
+
+  const reasonTrimmed = reason.trim();
+  let reasonLine = 'Sebebin kısa. Abartmıyoruz.';
+  if (reasonTrimmed.length >= 20 && capacity > 15) {
+    minutes = Math.min(capacity, minutes + 5);
+    reasonLine = 'Sebebin net. Süreye 5 dakika eklendi.';
+  } else if (reasonTrimmed.length >= 20) {
+    reasonLine = 'Sebebin net. Yine de 15 dakikanın altına inilmez.';
+  }
+
+  minutes = Math.max(15, minutes);
+
+  let programDays = 21;
+  if (booksLast6Months === '0' || booksLast6Months === '1-2') programDays = 28;
+  else if (booksLast6Months === '3-5') programDays = 24;
+  else programDays = 21;
+  if (minutes <= 15) programDays += 7;
+
+  const slot = recommendedSlot(booksLast6Months, focusId);
+
+  return {
+    sessionMinutes: minutes,
+    programDays,
+    recommendedSlot: slot,
+    summary: `${habitLine} ${reasonLine} Her oturum ${minutes} dk, program ${programDays} gün.`,
+  };
+}
+
+export function analyzeWalking(
+  frequency: string,
+  capacityId: string,
+  slotPref: TimeSlot,
+): CoachPlanAnalysis {
+  const capacity = Math.max(
+    15,
+    WALK_Q2_OPTIONS.find((item) => item.id === capacityId)?.minutes ?? 15,
+  );
+
+  let minutes = 15;
+  let habitLine = 'Yürüme alışkanlığın yok. Kısa süreyle başlıyoruz.';
+  if (frequency === '1-2') {
+    minutes = 20;
+    habitLine = 'Haftada bir-iki yetmez. Süre buradan çıkar.';
+  } else if (frequency === '3-4') {
+    minutes = 25;
+    habitLine = 'Tempo var. Kaçış yok.';
+  } else if (frequency === 'her-gun') {
+    minutes = 30;
+    habitLine = 'Yürüyorsun. Süre kaçışa göre ayarlanmaz.';
+  }
+
+  minutes = Math.max(15, Math.min(minutes, capacity));
+  if (capacity === 15) {
+    minutes = 15;
+    habitLine = 'Nefesin kısa. 15 dakikanın altına inilmez.';
+  } else if (capacity > minutes) {
+    minutes = Math.min(capacity, minutes + 5);
+  }
+
+  let programDays = 21;
+  if (frequency === '0' || frequency === '1-2') programDays = 28;
+  else if (frequency === '3-4') programDays = 24;
+  else programDays = 21;
+  if (minutes <= 15) programDays += 7;
+
+  const slotLabel = WALK_Q3_OPTIONS.find((item) => item.id === slotPref)?.label ?? 'Akşam';
+
+  return {
+    sessionMinutes: minutes,
+    programDays,
+    recommendedSlot: slotPref,
+    summary: `${habitLine} ${slotLabel} dilimi senin. Her yürüyüş ${minutes} dk, program ${programDays} gün.`,
+  };
+}
+
+export function sessionMinutesForPlan(
+  category: PlanCategory,
+  focusId?: string,
+  booksLast6Months?: string,
+  reason?: string,
+): number {
   if (category === 'kitap') {
-    return BOOK_Q2_OPTIONS.find((item) => item.id === focusId)?.minutes ?? DEFAULT_MINUTES.kitap;
+    return analyzeBookReading(booksLast6Months ?? '0', focusId ?? '15', reason ?? '').sessionMinutes;
   }
   return DEFAULT_MINUTES[category];
+}
+
+function addDaysToDisplay(days: number): string {
+  const day = startOfToday();
+  day.setDate(day.getDate() + days);
+  return `${padDatePart(day.getDate())}.${padDatePart(day.getMonth() + 1)}.${day.getFullYear()}`;
 }
 
 function todayDisplayDate(): string {
@@ -82,11 +234,14 @@ export function buildCoachGoal(input: {
   slot: TimeSlot;
   sessionMinutes: number;
   coachReason: string;
+  programDays?: number;
+  analysisSummary?: string;
 }): {
   title: string;
   description: string;
   date: string;
   time: string;
+  endTime: string;
   repeat: RepeatConfig;
   endDate: string;
   category: PlanCategory;
@@ -95,17 +250,27 @@ export function buildCoachGoal(input: {
   coachReason: string;
 } {
   const slot = TIME_SLOTS.find((item) => item.id === input.slot) ?? TIME_SLOTS[0];
+  const endTime = addMinutesToClock(slot.time, input.sessionMinutes);
   const reasonLine = input.coachReason.trim()
     ? `Sebep: ${input.coachReason.trim()}`
     : 'Koçtan gelen günlük plan.';
+  const analysisLine = input.analysisSummary?.trim() ?? '';
+  const endDate = input.programDays ? addDaysToDisplay(input.programDays) : '';
 
   return {
     title: CATEGORY_TITLES[input.category](input.sessionMinutes),
-    description: `${categoryLabel(input.category)} · ${slot.label} ${slot.time}. ${reasonLine}`,
+    description: [
+      `${categoryLabel(input.category)} · ${slot.label} ${slot.time}–${endTime}.`,
+      analysisLine,
+      reasonLine,
+    ]
+      .filter(Boolean)
+      .join(' '),
     date: todayDisplayDate(),
     time: slot.time,
+    endTime,
     repeat: DAILY,
-    endDate: '',
+    endDate,
     category: input.category,
     timeSlot: input.slot,
     sessionMinutes: input.sessionMinutes,

@@ -7,6 +7,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import {
   formatRepeatSummary,
+  formatTimeRange,
   getConfrontationMessage,
   isCompletedToday,
   isHandledToday,
@@ -221,7 +222,9 @@ export default function HomeScreen() {
                   <View key={goal.id} style={styles.dayItem}>
                     <Text style={styles.dayItemTitle}>{goal.title}</Text>
                     <Text style={styles.dayItemMeta}>
-                      {[goal.time, formatRepeatSummary(goal.repeat)].filter(Boolean).join(' · ')}
+                      {[formatTimeRange(goal.time, goal.endTime), formatRepeatSummary(goal.repeat)]
+                        .filter(Boolean)
+                        .join(' · ')}
                     </Text>
                   </View>
                 ))
@@ -386,7 +389,7 @@ function GoalCard({
           {hasSchedule && (
             <View style={styles.badge}>
               <Text style={styles.badgeText}>
-                {[goal.date, goal.time].filter(Boolean).join(' • ')}
+                {[goal.date, formatTimeRange(goal.time, goal.endTime)].filter(Boolean).join(' • ')}
               </Text>
             </View>
           )}
@@ -401,6 +404,11 @@ function GoalCard({
           {!!goal.endDate && (
             <View style={styles.badge}>
               <Text style={styles.badgeText}>Bitiş {goal.endDate}</Text>
+            </View>
+          )}
+          {goal.sessionMinutes > 0 && (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{goal.sessionMinutes} dk</Text>
             </View>
           )}
           {goal.repeat && goal.streak > 0 && (
