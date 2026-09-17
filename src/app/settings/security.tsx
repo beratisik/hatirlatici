@@ -5,7 +5,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -13,7 +12,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useRouter } from 'expo-router';
 
+import { PasswordField } from '@/components/password-field';
 import { useUser } from '@/context/GoalContext';
+import { isValidPassword, PASSWORD_RULE_TEXT } from '@/lib/password';
 
 export default function SecurityScreen() {
   const router = useRouter();
@@ -25,7 +26,9 @@ export default function SecurityScreen() {
   const [message, setMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
   const passwordsMatch = newPassword.length > 0 && newPassword === confirmPassword;
-  const canSubmit = currentPassword.trim().length > 0 && passwordsMatch;
+  const newPasswordValid = isValidPassword(newPassword);
+  const canSubmit =
+    currentPassword.trim().length > 0 && newPasswordValid && passwordsMatch;
 
   function clearMessage() {
     setMessage(null);
@@ -34,6 +37,10 @@ export default function SecurityScreen() {
   function handleUpdatePassword() {
     if (!currentPassword.trim() || !newPassword.trim() || !confirmPassword.trim()) {
       setMessage({ type: 'error', text: 'Lütfen tüm alanları doldur.' });
+      return;
+    }
+    if (!isValidPassword(newPassword)) {
+      setMessage({ type: 'error', text: PASSWORD_RULE_TEXT });
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -63,52 +70,45 @@ export default function SecurityScreen() {
           </TouchableOpacity>
 
           <Text style={styles.title}>GÜVENLİK</Text>
-          <Text style={styles.subtitle}>Şifreni değiştir. İki yeni şifre birebir aynı olmadan kayıt olmaz.</Text>
+          <Text style={styles.subtitle}>
+            Şifreni değiştir. {PASSWORD_RULE_TEXT} İki yeni şifre birebir aynı olmadan kayıt olmaz.
+          </Text>
 
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>ŞİFRE DEĞİŞTİR</Text>
-            <TextInput
+            <PasswordField
               value={currentPassword}
               onChangeText={(text) => {
                 setCurrentPassword(text);
                 clearMessage();
               }}
               placeholder="Mevcut Şifre"
-              placeholderTextColor="#6B6B6B"
-              style={styles.input}
-              secureTextEntry
-              autoCapitalize="none"
-              autoCorrect={false}
+              style={styles.fieldInput}
             />
-            <TextInput
+            <PasswordField
               value={newPassword}
               onChangeText={(text) => {
                 setNewPassword(text);
                 clearMessage();
               }}
               placeholder="Yeni Şifre"
-              placeholderTextColor="#6B6B6B"
-              style={styles.input}
-              secureTextEntry
-              autoCapitalize="none"
-              autoCorrect={false}
+              style={styles.fieldInput}
             />
-            <TextInput
+            <PasswordField
               value={confirmPassword}
               onChangeText={(text) => {
                 setConfirmPassword(text);
                 clearMessage();
               }}
               placeholder="Yeni Şifre Tekrar"
-              placeholderTextColor="#6B6B6B"
               style={[
-                styles.input,
+                styles.fieldInput,
                 confirmPassword.length > 0 && !passwordsMatch && styles.inputMismatch,
               ]}
-              secureTextEntry
-              autoCapitalize="none"
-              autoCorrect={false}
             />
+            {newPassword.length > 0 && !newPasswordValid && (
+              <Text style={styles.errorText}>{PASSWORD_RULE_TEXT}</Text>
+            )}
             {confirmPassword.length > 0 && !passwordsMatch && (
               <Text style={styles.errorText}>Yeni şifreler eşleşmiyor.</Text>
             )}
@@ -177,15 +177,8 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 1.4,
   },
-  input: {
+  fieldInput: {
     backgroundColor: '#141414',
-    borderWidth: 1,
-    borderColor: '#2A2A2A',
-    borderRadius: 10,
-    color: '#F5F5F5',
-    fontSize: 16,
-    paddingHorizontal: 16,
-    paddingVertical: Platform.OS === 'web' ? 16 : 14,
   },
   inputMismatch: {
     borderColor: '#C1121F',

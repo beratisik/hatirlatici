@@ -10,20 +10,27 @@ import {
 } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { syncRankReminder } from '@/lib/notifications';
+import {
+  cancelGoalAlarm,
+  presentStreakCoachNotification,
+  scheduleGoalAlarm,
+  syncGoalAlarms,
+  syncRankReminder,
+} from '@/lib/notifications';
 
 const STORAGE_KEY = '@hatirlatici/state';
 
-// ---------------------------------------------------------------------------
-// Uygulamanın kalıcı hafızası — hedefler, oturum, puan ve profil AsyncStorage
-// üzerinden saklanır. Açılışta hydrate edilir.
-// ---------------------------------------------------------------------------
+export const STREAK_BONUS_AT = 5;
+export const STREAK_BONUS_POINTS = 10;
+export const STREAK_COACH_TITLE = '5 GÜNLÜK SERİ';
+export const STREAK_COACH_MESSAGE =
+  '5 gün dayandın. Kutlama yok. Yarın bozarsan bu da yalan olur. Devam et ya da sil baştan.';
 
 export type RepeatUnit = 'saat' | 'gun' | 'hafta' | 'ay';
 
 export type RepeatConfig = {
   unit: RepeatUnit;
-  interval: number; // 1-10
+  interval: number;
 };
 
 const UNIT_LOCATIVE: Record<RepeatUnit, string> = {
@@ -33,17 +40,41 @@ const UNIT_LOCATIVE: Record<RepeatUnit, string> = {
   ay: 'ayda',
 };
 
-export type ArchiveReason = 'onTime' | 'late' | 'missed' | 'manual';
+export type ArchiveReason = 'onTime' | 'late' | 'missed' | 'manual' | 'ended';
+export type GoalOutcome = 'onTime' | 'late' | 'missed';
+export type Gender = 'kadin' | 'erkek' | 'belirtmek_istemiyorum';
+
+export const GENDER_OPTIONS: { value: Gender; label: string }[] = [
+  { value: 'kadin', label: 'Kadın' },
+  { value: 'erkek', label: 'Erkek' },
+  { value: 'belirtmek_istemiyorum', label: 'Belirtmek İstemiyorum' },
+];
+
+export function describeGender(gender: Gender | null): string {
+  return GENDER_OPTIONS.find((item) => item.value === gender)?.label ?? 'Belirtilmedi';
+}
 
 export type Goal = {
   id: string;
   title: string;
   description: string;
-  date: string; // "GG.AA.YYYY" formatında, seçilmediyse boş string
-  time: string; // "SS:DD" formatında, seçilmediyse boş string
+  date: string;
+  time: string;
   repeat: RepeatConfig | null;
-  archived: boolean; // true ise ana listede gösterilmez (tamamlandı/arşivlendi)
-  archiveReason: ArchiveReason | null; // arşive neden düştüğü (rozet göstermek için)
+  endDate: string;
+  lastCompletedDate: string | null;
+  lastOutcome: GoalOutcome | null;
+  streak: number;
+  archived: boolean;
+  archiveReason: ArchiveReason | null;
+};
+
+export type CompleteResult = {
+  applied: boolean;
+  points: number;
+  streak: number;
+  bonus: boolean;
+  message: string | null;
 };
 
 export function formatRepeatSummary(repeat: RepeatConfig | null): string {
@@ -51,8 +82,74 @@ export function formatRepeatSummary(repeat: RepeatConfig | null): string {
   return `Her ${repeat.interval} ${UNIT_LOCATIVE[repeat.unit]} bir tekrarla`;
 }
 
-// --- Puanlama ---
-export type GoalOutcome = 'onTime' | 'late' | 'missed';
+export function padDatePart(value: number) {
+  return value.toString().padStart(2, '0');
+}
+
+export function todayIso(): string {
+  return toIso(startOfToday());
+}
+
+export function yesterdayIso(): string {
+  const day = startOfToday();
+  day.setDate(day.getDate() - 1);
+  return toIso(day);
+}
+
+export function startOfToday(): Date {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today;
+}
+
+function toIso(date: Date): string {
+  return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`;
+}
+
+export function parseGoalDate(value: string): Date | null {
+  const match = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(value);
+  if (!match) return null;
+  const parsed = new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]));
+  parsed.setHours(0, 0, 0, 0);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function parseGoalTime(value: string): { hour: number; minute: number } | null {
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return null;
+  return { hour: Number(match[1]), minute: Number(match[2]) };
+}
+
+export function parseGoalDateParts(
+  value: string,
+): { day: number; month: number; year: number } | null {
+  const parsed = parseGoalDate(value);
+  if (!parsed) return null;
+  return {
+    day: parsed.getDate(),
+    month: parsed.getMonth() + 1,
+    year: parsed.getFullYear(),
+  };
+}
+
+export function isRepeating(goal: Goal): boolean {
+  return goal.repeat != null;
+}
+
+export function isHandledToday(goal: Goal): boolean {
+  return isRepeating(goal) && goal.lastCompletedDate === todayIso();
+}
+
+export function isCompletedToday(goal: Goal): boolean {
+  return isHandledToday(goal) && (goal.lastOutcome === 'onTime' || goal.lastOutcome === 'late');
+}
+
+export function hasEndDatePassed(goal: Goal, today = startOfToday()): boolean {
+  if (!goal.endDate) return false;
+  const end = parseGoalDate(goal.endDate);
+  if (!end) return false;
+  return end.getTime() < today.getTime();
+}
 
 export const OUTCOME_POINTS: Record<GoalOutcome, number> = {
   onTime: 2,
@@ -68,13 +165,14 @@ export function describeArchiveReason(reason: ArchiveReason | null): { label: st
       return { label: '🕒 Geç yapıldı', color: '#D98C2B' };
     case 'missed':
       return { label: '✕ Yapılmadı', color: '#FF5C5C' };
+    case 'ended':
+      return { label: '⏱ Süresi doldu', color: '#8A8A8A' };
     case 'manual':
     default:
       return { label: '🗄 Arşivlendi', color: '#8A8A8A' };
   }
 }
 
-// --- Disiplin Skoru rütbeleri ---
 export type Rank = {
   title: string;
   quote: string;
@@ -124,12 +222,12 @@ export function getRank(score: number): Rank {
   return current;
 }
 
-// --- Kullanıcı ---
 export type User = {
   name: string;
   email: string;
   password: string;
   avatarUri: string | null;
+  gender: Gender | null;
 };
 
 type PersistedState = {
@@ -140,15 +238,25 @@ type PersistedState = {
   profile: string | null;
 };
 
+type NewGoalInput = Omit<
+  Goal,
+  'id' | 'archived' | 'archiveReason' | 'lastCompletedDate' | 'lastOutcome' | 'streak'
+>;
+
+type GoalPatch = Partial<Pick<Goal, 'title' | 'time' | 'endDate'>>;
+
 type GoalContextValue = {
   isReady: boolean;
   isLoggedIn: boolean;
   profile: string | null;
 
   goals: Goal[];
-  addGoal: (goal: Omit<Goal, 'id' | 'archived' | 'archiveReason'>) => void;
-  completeGoal: (id: string, outcome: GoalOutcome) => void;
+  addGoal: (goal: NewGoalInput) => void;
+  updateGoal: (id: string, patch: GoalPatch) => void;
+  deleteGoal: (id: string) => void;
+  completeGoal: (id: string, outcome: GoalOutcome) => CompleteResult;
   archiveGoal: (id: string) => void;
+  restoreGoal: (id: string) => void;
 
   user: User | null;
   setUser: (user: User) => void;
@@ -163,6 +271,10 @@ type GoalContextValue = {
 
 const GoalContext = createContext<GoalContextValue | undefined>(undefined);
 
+function isGender(value: unknown): value is Gender {
+  return value === 'kadin' || value === 'erkek' || value === 'belirtmek_istemiyorum';
+}
+
 function normalizeUser(raw: unknown): User | null {
   if (!raw || typeof raw !== 'object') return null;
   const value = raw as Partial<User>;
@@ -172,6 +284,7 @@ function normalizeUser(raw: unknown): User | null {
     email: value.email,
     password: value.password,
     avatarUri: typeof value.avatarUri === 'string' ? value.avatarUri : null,
+    gender: isGender(value.gender) ? value.gender : null,
   };
 }
 
@@ -181,9 +294,43 @@ function normalizeGoals(raw: unknown): Goal[] {
     .filter((item): item is Goal => !!item && typeof item === 'object' && typeof item.id === 'string')
     .map((item) => ({
       ...item,
+      endDate: typeof item.endDate === 'string' ? item.endDate : '',
+      lastCompletedDate: typeof item.lastCompletedDate === 'string' ? item.lastCompletedDate : null,
+      lastOutcome: item.lastOutcome ?? null,
+      streak: typeof item.streak === 'number' ? item.streak : 0,
       archived: Boolean(item.archived),
       archiveReason: item.archiveReason ?? null,
     }));
+}
+
+function resetBrokenStreaks(goals: Goal[]): Goal[] {
+  const today = todayIso();
+  const yesterday = yesterdayIso();
+  let changed = false;
+  const next = goals.map((goal) => {
+    if (goal.archived || !goal.repeat || goal.streak <= 0) return goal;
+    const last = goal.lastCompletedDate;
+    if (!last || last === today || last === yesterday) return goal;
+    changed = true;
+    return { ...goal, streak: 0 };
+  });
+  return changed ? next : goals;
+}
+
+function archiveExpiredGoals(goals: Goal[]): Goal[] {
+  const today = startOfToday();
+  let changed = false;
+  const next = goals.map((goal) => {
+    if (goal.archived || !hasEndDatePassed(goal, today)) return goal;
+    changed = true;
+    void cancelGoalAlarm(goal.id);
+    return { ...goal, archived: true, archiveReason: 'ended' as const };
+  });
+  return changed ? next : goals;
+}
+
+function maintainGoals(goals: Goal[]): Goal[] {
+  return resetBrokenStreaks(archiveExpiredGoals(goals));
 }
 
 export function GoalProvider({ children }: { children: ReactNode }) {
@@ -194,6 +341,8 @@ export function GoalProvider({ children }: { children: ReactNode }) {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [profile, setProfileState] = useState<string | null>(null);
   const skipPersist = useRef(true);
+  const goalsRef = useRef<Goal[]>([]);
+  goalsRef.current = goals;
 
   useEffect(() => {
     let cancelled = false;
@@ -203,7 +352,8 @@ export function GoalProvider({ children }: { children: ReactNode }) {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
         if (raw && !cancelled) {
           const parsed = JSON.parse(raw) as Partial<PersistedState>;
-          setGoals(normalizeGoals(parsed.goals));
+          const nextGoals = maintainGoals(normalizeGoals(parsed.goals));
+          setGoals(nextGoals);
           setScore(typeof parsed.score === 'number' ? parsed.score : 0);
           setUserState(normalizeUser(parsed.user));
           setIsLoggedIn(Boolean(parsed.isLoggedIn && parsed.user));
@@ -243,35 +393,131 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     void syncRankReminder(getRank(score));
   }, [isReady, isLoggedIn, score]);
 
-  const addGoal = useCallback((goal: Omit<Goal, 'id' | 'archived' | 'archiveReason'>) => {
-    setGoals((prev) => [
-      ...prev,
-      {
-        ...goal,
-        id: `${Date.now()}-${Math.round(Math.random() * 1000)}`,
-        archived: false,
-        archiveReason: null,
-      },
-    ]);
+  useEffect(() => {
+    if (!isReady) return;
+    setGoals((prev) => maintainGoals(prev));
+  }, [isReady]);
+
+  useEffect(() => {
+    if (!isReady || !isLoggedIn) return;
+    void syncGoalAlarms(goalsRef.current);
+  }, [isReady, isLoggedIn]);
+
+  const addGoal = useCallback((goal: NewGoalInput) => {
+    const created: Goal = {
+      ...goal,
+      id: `${Date.now()}-${Math.round(Math.random() * 1000)}`,
+      lastCompletedDate: null,
+      lastOutcome: null,
+      streak: 0,
+      archived: false,
+      archiveReason: null,
+    };
+    setGoals((prev) => maintainGoals([...prev, created]));
+    void scheduleGoalAlarm(created);
   }, []);
 
-  const completeGoal = useCallback((id: string, outcome: GoalOutcome) => {
+  const updateGoal = useCallback((id: string, patch: GoalPatch) => {
+    const current = goalsRef.current.find((item) => item.id === id);
+    if (!current) return;
+    const next = { ...current, ...patch };
+    setGoals((prev) => maintainGoals(prev.map((item) => (item.id === id ? next : item))));
+    void scheduleGoalAlarm(next);
+  }, []);
+
+  const deleteGoal = useCallback((id: string) => {
+    void cancelGoalAlarm(id);
+    setGoals((prev) => prev.filter((item) => item.id !== id));
+  }, []);
+
+  const completeGoal = useCallback((id: string, outcome: GoalOutcome): CompleteResult => {
+    const empty: CompleteResult = {
+      applied: false,
+      points: 0,
+      streak: 0,
+      bonus: false,
+      message: null,
+    };
+    const day = todayIso();
+    const goal = goalsRef.current.find((item) => item.id === id);
+    if (!goal || goal.archived) return empty;
+    if (goal.repeat && goal.lastCompletedDate === day) return empty;
+
+    let nextStreak = goal.streak;
+    if (goal.repeat) {
+      if (outcome === 'missed') {
+        nextStreak = 0;
+      } else if (goal.lastCompletedDate === yesterdayIso()) {
+        nextStreak = goal.streak + 1;
+      } else {
+        nextStreak = 1;
+      }
+    }
+
+    const bonus = goal.repeat && outcome === 'onTime' && nextStreak === STREAK_BONUS_AT;
+    const points = bonus ? STREAK_BONUS_POINTS : OUTCOME_POINTS[outcome];
+
     setGoals((prev) =>
-      prev.map((g) => (g.id === id ? { ...g, archived: true, archiveReason: outcome } : g)),
+      prev.map((item) => {
+        if (item.id !== id) return item;
+        if (item.repeat) {
+          return {
+            ...item,
+            lastCompletedDate: day,
+            lastOutcome: outcome,
+            streak: nextStreak,
+          };
+        }
+        return { ...item, archived: true, archiveReason: outcome };
+      }),
     );
-    setScore((prev) => prev + OUTCOME_POINTS[outcome]);
+    setScore((prev) => prev + points);
+
+    if (!goal.repeat) {
+      void cancelGoalAlarm(id);
+    }
+
+    if (bonus) {
+      void presentStreakCoachNotification(STREAK_COACH_TITLE, STREAK_COACH_MESSAGE);
+    }
+
+    return {
+      applied: true,
+      points,
+      streak: nextStreak,
+      bonus: Boolean(bonus),
+      message: bonus ? STREAK_COACH_MESSAGE : null,
+    };
   }, []);
 
   const archiveGoal = useCallback((id: string) => {
+    void cancelGoalAlarm(id);
     setGoals((prev) =>
       prev.map((g) => (g.id === id ? { ...g, archived: true, archiveReason: 'manual' } : g)),
     );
+  }, []);
+
+  const restoreGoal = useCallback((id: string) => {
+    const current = goalsRef.current.find((g) => g.id === id);
+    if (!current) return;
+    const next = maintainGoals([{ ...current, archived: false, archiveReason: null }])[0];
+    setGoals((prev) =>
+      maintainGoals(
+        prev.map((g) => (g.id === id ? { ...g, archived: false, archiveReason: null } : g)),
+      ),
+    );
+    if (next.archived) {
+      void cancelGoalAlarm(id);
+    } else {
+      void scheduleGoalAlarm(next);
+    }
   }, []);
 
   const setUser = useCallback((nextUser: User) => {
     setUserState({
       ...nextUser,
       avatarUri: nextUser.avatarUri ?? null,
+      gender: nextUser.gender ?? null,
     });
   }, []);
 
@@ -309,8 +555,11 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       profile,
       goals,
       addGoal,
+      updateGoal,
+      deleteGoal,
       completeGoal,
       archiveGoal,
+      restoreGoal,
       user,
       setUser,
       updatePassword,
@@ -326,8 +575,11 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       profile,
       goals,
       addGoal,
+      updateGoal,
+      deleteGoal,
       completeGoal,
       archiveGoal,
+      restoreGoal,
       user,
       setUser,
       updatePassword,
@@ -350,7 +602,6 @@ export function useGoals() {
   return context;
 }
 
-/** `useGoals`'ın kullanıcı hesabı ve Disiplin Skoru'na odaklanan kısayolu. */
 export function useUser() {
   const {
     user,

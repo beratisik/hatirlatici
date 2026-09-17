@@ -1,5 +1,5 @@
-import { useRef } from 'react';
-import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useRef, useState } from 'react';
+import { Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -7,16 +7,21 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import {
   formatRepeatSummary,
+  isCompletedToday,
+  isHandledToday,
   OUTCOME_POINTS,
+  STREAK_COACH_TITLE,
   useGoals,
   type Goal,
   type GoalOutcome,
 } from '@/context/GoalContext';
+import { confirmDeleteGoal, GoalMenuButton, GoalMenuSheet } from '@/components/goal-menu';
 
 export default function HomeScreen() {
   const router = useRouter();
   const { profile: profileParam } = useLocalSearchParams<{ profile?: string }>();
-  const { goals, completeGoal, archiveGoal, score, profile } = useGoals();
+  const { goals, completeGoal, archiveGoal, deleteGoal, score, profile } = useGoals();
+  const [menuGoal, setMenuGoal] = useState<Goal | null>(null);
 
   const activeGoals = goals.filter((goal) => !goal.archived);
   const archivedCount = goals.filter((goal) => goal.archived).length;
@@ -32,6 +37,13 @@ export default function HomeScreen() {
 
   function handleOpenArchive() {
     router.push('/archive');
+  }
+
+  function handleOutcome(id: string, outcome: GoalOutcome) {
+    const result = completeGoal(id, outcome);
+    if (result.bonus && result.message) {
+      Alert.alert(STREAK_COACH_TITLE, result.message);
+    }
   }
 
   return (
@@ -84,8 +96,9 @@ export default function HomeScreen() {
         renderItem={({ item }) => (
           <GoalCard
             goal={item}
-            onOutcome={(id, outcome) => completeGoal(id, outcome)}
+            onOutcome={handleOutcome}
             onArchive={(id) => archiveGoal(id)}
+            onOpenMenu={() => setMenuGoal(item)}
           />
         )}
         ListEmptyComponent={
@@ -110,6 +123,24 @@ export default function HomeScreen() {
       <TouchableOpacity style={styles.fab} activeOpacity={0.8} onPress={handleAddGoal}>
         <Text style={styles.fabIcon}>+</Text>
       </TouchableOpacity>
+
+      <GoalMenuSheet
+        visible={!!menuGoal}
+        onClose={() => setMenuGoal(null)}
+        onEdit={
+          menuGoal
+            ? () =>
+                router.push({
+                  pathname: '/new-goal',
+                  params: { profile: profileKey, id: menuGoal.id },
+                })
+            : undefined
+        }
+        onDelete={() => {
+          if (!menuGoal) return;
+          confirmDeleteGoal(menuGoal.title, () => deleteGoal(menuGoal.id));
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -118,14 +149,19 @@ function GoalCard({
   goal,
   onOutcome,
   onArchive,
+  onOpenMenu,
 }: {
   goal: Goal;
   onOutcome: (id: string, outcome: GoalOutcome) => void;
   onArchive: (id: string) => void;
+  onOpenMenu: () => void;
 }) {
   const swipeableRef = useRef<Swipeable>(null);
   const hasSchedule = !!(goal.date || goal.time);
   const repeatLabel = formatRepeatSummary(goal.repeat);
+  const handledToday = isHandledToday(goal);
+  const completedToday = isCompletedToday(goal);
+  const missedToday = handledToday && goal.lastOutcome === 'missed';
 
   function runAction(action: () => void) {
     swipeableRef.current?.close();
@@ -138,33 +174,39 @@ function GoalCard({
       overshootLeft={false}
       overshootRight={false}
       friction={2}
-      renderLeftActions={() => (
-        <View style={styles.leftActions}>
-          <TouchableOpacity
-            style={[styles.actionButton, styles.actionOnTime]}
-            activeOpacity={0.85}
-            onPress={() => runAction(() => onOutcome(goal.id, 'onTime'))}>
-            <Text style={styles.actionLabel}>ZAMANINDA{'\n'}YAPTIM</Text>
-            <Text style={styles.actionPoints}>+{OUTCOME_POINTS.onTime}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.actionButton, styles.actionLate]}
-            activeOpacity={0.85}
-            onPress={() => runAction(() => onOutcome(goal.id, 'late'))}>
-            <Text style={styles.actionLabel}>GEÇ{'\n'}YAPTIM</Text>
-            <Text style={styles.actionPoints}>+{OUTCOME_POINTS.late}</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+      renderLeftActions={
+        handledToday
+          ? undefined
+          : () => (
+              <View style={styles.leftActions}>
+                <TouchableOpacity
+                  style={[styles.actionButton, styles.actionOnTime]}
+                  activeOpacity={0.85}
+                  onPress={() => runAction(() => onOutcome(goal.id, 'onTime'))}>
+                  <Text style={styles.actionLabel}>ZAMANINDA{'\n'}YAPTIM</Text>
+                  <Text style={styles.actionPoints}>+{OUTCOME_POINTS.onTime}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.actionButton, styles.actionLate]}
+                  activeOpacity={0.85}
+                  onPress={() => runAction(() => onOutcome(goal.id, 'late'))}>
+                  <Text style={styles.actionLabel}>GEÇ{'\n'}YAPTIM</Text>
+                  <Text style={styles.actionPoints}>+{OUTCOME_POINTS.late}</Text>
+                </TouchableOpacity>
+              </View>
+            )
+      }
       renderRightActions={() => (
         <View style={styles.rightActions}>
-          <TouchableOpacity
-            style={[styles.actionButton, styles.actionMissed]}
-            activeOpacity={0.85}
-            onPress={() => runAction(() => onOutcome(goal.id, 'missed'))}>
-            <Text style={styles.actionLabel}>YAPMADIM</Text>
-            <Text style={styles.actionPoints}>{OUTCOME_POINTS.missed}</Text>
-          </TouchableOpacity>
+          {!handledToday && (
+            <TouchableOpacity
+              style={[styles.actionButton, styles.actionMissed]}
+              activeOpacity={0.85}
+              onPress={() => runAction(() => onOutcome(goal.id, 'missed'))}>
+              <Text style={styles.actionLabel}>YAPMADIM</Text>
+              <Text style={styles.actionPoints}>{OUTCOME_POINTS.missed}</Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity
             style={[styles.actionButton, styles.actionArchive]}
             activeOpacity={0.85}
@@ -173,10 +215,24 @@ function GoalCard({
           </TouchableOpacity>
         </View>
       )}>
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>{goal.title}</Text>
+      <View style={[styles.card, handledToday && styles.cardDone]}>
+        <View style={styles.cardTopRow}>
+          <Text style={[styles.cardTitle, completedToday && styles.cardTitleDone]}>{goal.title}</Text>
+          <GoalMenuButton onPress={onOpenMenu} />
+        </View>
 
-        {!!goal.description && <Text style={styles.cardDescription}>{goal.description}</Text>}
+        {!!goal.description && (
+          <Text style={[styles.cardDescription, completedToday && styles.cardTitleDone]}>
+            {goal.description}
+          </Text>
+        )}
+
+        {completedToday && (
+          <Text style={styles.doneHint}>Bugün tamamlandı. Yarın gelmeden tekrar işaretlenemez.</Text>
+        )}
+        {missedToday && (
+          <Text style={styles.missedHint}>Bugün yapılmadı. Yarın gelmeden tekrar işaretlenemez.</Text>
+        )}
 
         <View style={styles.cardFooter}>
           {hasSchedule && (
@@ -189,6 +245,16 @@ function GoalCard({
           <View style={styles.badge}>
             <Text style={styles.badgeText}>{repeatLabel}</Text>
           </View>
+          {!!goal.endDate && (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>Bitiş {goal.endDate}</Text>
+            </View>
+          )}
+          {goal.repeat && goal.streak > 0 && (
+            <View style={styles.badge}>
+              <Text style={styles.streakBadgeText}>🔥 {goal.streak} seri</Text>
+            </View>
+          )}
         </View>
       </View>
     </Swipeable>
@@ -326,10 +392,34 @@ const styles = StyleSheet.create({
     padding: 18,
     gap: 10,
   },
+  cardTopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
   cardTitle: {
+    flex: 1,
     color: '#F5F5F5',
     fontSize: 17,
     fontWeight: '700',
+  },
+  cardTitleDone: {
+    textDecorationLine: 'line-through',
+    color: '#6B6B6B',
+  },
+  cardDone: {
+    opacity: 0.72,
+  },
+  doneHint: {
+    color: '#3DDC84',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  missedHint: {
+    color: '#FF5C5C',
+    fontSize: 12,
+    fontWeight: '600',
   },
   cardDescription: {
     color: '#9A9A9A',
@@ -354,6 +444,11 @@ const styles = StyleSheet.create({
     color: '#C7C7C7',
     fontSize: 12,
     fontWeight: '600',
+  },
+  streakBadgeText: {
+    color: '#F5C400',
+    fontSize: 12,
+    fontWeight: '800',
   },
 
   // --- Kaydırma (swipe) aksiyonları ---

@@ -15,7 +15,15 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
-import { formatRepeatSummary, useGoals, type RepeatConfig, type RepeatUnit } from '@/context/GoalContext';
+import {
+  formatRepeatSummary,
+  padDatePart,
+  parseGoalDateParts,
+  parseGoalTime,
+  useGoals,
+  type RepeatConfig,
+  type RepeatUnit,
+} from '@/context/GoalContext';
 
 // ---------------------------------------------------------------------------
 // "Yeni Görev Ekle" ekranı — tarih için gerçek bir takvim, saat için iOS
@@ -49,7 +57,7 @@ const HOUR_OPTIONS = Array.from({ length: 24 }, (_, i) => pad(i));
 const MINUTE_OPTIONS = Array.from({ length: 60 }, (_, i) => pad(i));
 
 function pad(value: number) {
-  return value.toString().padStart(2, '0');
+  return padDatePart(value);
 }
 
 function getDaysInMonth(year: number, month: number) {
@@ -159,8 +167,10 @@ function WheelPicker({
 
 export default function NewGoalScreen() {
   const router = useRouter();
-  const { addGoal } = useGoals();
-  const { profile } = useLocalSearchParams<{ profile?: string }>();
+  const { addGoal, updateGoal, goals } = useGoals();
+  const { profile, id } = useLocalSearchParams<{ profile?: string; id?: string }>();
+  const editingGoal = id ? goals.find((goal) => goal.id === id) : undefined;
+  const isEditing = !!editingGoal;
   const descriptionPlaceholder =
     (profile && DESCRIPTION_PLACEHOLDERS[profile]) || DEFAULT_DESCRIPTION_PLACEHOLDER;
 
@@ -179,6 +189,12 @@ export default function NewGoalScreen() {
   const [selectedDate, setSelectedDate] = useState<{ day: number; month: number; year: number } | null>(
     null,
   );
+  const [selectedEndDate, setSelectedEndDate] = useState<{
+    day: number;
+    month: number;
+    year: number;
+  } | null>(null);
+  const [calendarTarget, setCalendarTarget] = useState<'start' | 'end'>('start');
 
   // --- Saat (wheel) state ---
   const [timeModalVisible, setTimeModalVisible] = useState(false);
@@ -191,16 +207,42 @@ export default function NewGoalScreen() {
   const [draftUnit, setDraftUnit] = useState<RepeatUnit>('saat');
   const [draftIntervalIndex, setDraftIntervalIndex] = useState(0);
   const [repeatConfig, setRepeatConfig] = useState<RepeatConfig | null>(null);
+  const hydratedEdit = useRef(false);
+
+  useEffect(() => {
+    if (!editingGoal || hydratedEdit.current) return;
+    hydratedEdit.current = true;
+    setTitle(editingGoal.title);
+    setDescription(editingGoal.description);
+    const start = parseGoalDateParts(editingGoal.date);
+    if (start) setSelectedDate(start);
+    const end = parseGoalDateParts(editingGoal.endDate);
+    if (end) setSelectedEndDate(end);
+    const clock = parseGoalTime(editingGoal.time);
+    if (clock) setSelectedTime(clock);
+    setRepeatConfig(editingGoal.repeat);
+  }, [editingGoal]);
 
   function handleGoBack() {
     router.back();
   }
 
   // --- Takvim yardımcıları ---
+  function endDateMin() {
+    if (selectedDate) {
+      const min = new Date(selectedDate.year, selectedDate.month - 1, selectedDate.day);
+      min.setHours(0, 0, 0, 0);
+      return min;
+    }
+    return today;
+  }
+
   function isDisabledDay(day: number) {
     const candidate = new Date(calendarYear, calendarMonth, day);
     candidate.setHours(0, 0, 0, 0);
-    // Sadece geçmiş günler kapalı; bugün seçilebilir.
+    if (calendarTarget === 'end') {
+      return candidate.getTime() < endDateMin().getTime();
+    }
     return candidate.getTime() < today.getTime();
   }
 
@@ -210,23 +252,34 @@ export default function NewGoalScreen() {
     return d.day === now.getDate() && d.month === now.getMonth() + 1 && d.year === now.getFullYear();
   }
 
-  const restrictTimeToNow = isDateToday(selectedDate);
+  const restrictTimeToNow = !isEditing && isDateToday(selectedDate);
 
   function isSelectedDay(day: number) {
+    const current = calendarTarget === 'end' ? selectedEndDate : selectedDate;
     return (
-      !!selectedDate &&
-      selectedDate.day === day &&
-      selectedDate.month === calendarMonth + 1 &&
-      selectedDate.year === calendarYear
+      !!current &&
+      current.day === day &&
+      current.month === calendarMonth + 1 &&
+      current.year === calendarYear
     );
   }
 
+  const minForNav = calendarTarget === 'end' ? endDateMin() : today;
   const isPrevMonthDisabled =
-    calendarYear === today.getFullYear() && calendarMonth === today.getMonth();
+    calendarYear === minForNav.getFullYear() && calendarMonth === minForNav.getMonth();
 
   function handleOpenDateModal() {
+    setCalendarTarget('start');
     setCalendarMonth(selectedDate ? selectedDate.month - 1 : today.getMonth());
     setCalendarYear(selectedDate ? selectedDate.year : today.getFullYear());
+    setDateModalVisible(true);
+  }
+
+  function handleOpenEndDateModal() {
+    const min = endDateMin();
+    setCalendarTarget('end');
+    setCalendarMonth(selectedEndDate ? selectedEndDate.month - 1 : min.getMonth());
+    setCalendarYear(selectedEndDate ? selectedEndDate.year : min.getFullYear());
     setDateModalVisible(true);
   }
 
@@ -252,8 +305,21 @@ export default function NewGoalScreen() {
   function handleSelectDay(day: number) {
     if (isDisabledDay(day)) return;
     const nextDate = { day, month: calendarMonth + 1, year: calendarYear };
+
+    if (calendarTarget === 'end') {
+      setSelectedEndDate(nextDate);
+      setDateModalVisible(false);
+      return;
+    }
+
     setSelectedDate(nextDate);
     setDateModalVisible(false);
+
+    if (selectedEndDate) {
+      const start = new Date(nextDate.year, nextDate.month - 1, nextDate.day).getTime();
+      const end = new Date(selectedEndDate.year, selectedEndDate.month - 1, selectedEndDate.day).getTime();
+      if (end < start) setSelectedEndDate(null);
+    }
 
     // Seçilen gün bugünse ve önceden seçilmiş saat artık geçmişte kaldıysa, "şimdi"ye kenetle.
     if (isDateToday(nextDate) && selectedTime) {
@@ -324,6 +390,7 @@ export default function NewGoalScreen() {
 
   function handleClearRepeat() {
     setRepeatConfig(null);
+    setSelectedEndDate(null);
     setRepeatModalVisible(false);
   }
 
@@ -333,14 +400,31 @@ export default function NewGoalScreen() {
       return;
     }
 
+    const timeValue = selectedTime ? `${pad(selectedTime.hour)}:${pad(selectedTime.minute)}` : '';
+    const endValue =
+      (isEditing ? editingGoal?.repeat : repeatConfig) && selectedEndDate
+        ? `${pad(selectedEndDate.day)}.${pad(selectedEndDate.month)}.${selectedEndDate.year}`
+        : '';
+
+    if (isEditing && editingGoal) {
+      updateGoal(editingGoal.id, {
+        title: title.trim(),
+        time: timeValue,
+        endDate: editingGoal.repeat ? endValue : editingGoal.endDate,
+      });
+      router.back();
+      return;
+    }
+
     addGoal({
       title: title.trim(),
       description: description.trim(),
       date: selectedDate
         ? `${pad(selectedDate.day)}.${pad(selectedDate.month)}.${selectedDate.year}`
         : '',
-      time: selectedTime ? `${pad(selectedTime.hour)}:${pad(selectedTime.minute)}` : '',
+      time: timeValue,
       repeat: repeatConfig,
+      endDate: endValue,
     });
 
     router.replace({ pathname: '/home', params: { profile: profile ?? '' } });
@@ -349,6 +433,9 @@ export default function NewGoalScreen() {
   const dateButtonLabel = selectedDate
     ? `${pad(selectedDate.day)}/${pad(selectedDate.month)}/${selectedDate.year}`
     : '📅 Tarih Seç';
+  const endDateButtonLabel = selectedEndDate
+    ? `${pad(selectedEndDate.day)}/${pad(selectedEndDate.month)}/${selectedEndDate.year}`
+    : '📅 Bitiş Tarihi (opsiyonel)';
   const timeButtonLabel = selectedTime
     ? `🕒 ${pad(selectedTime.hour)}:${pad(selectedTime.minute)}`
     : '🕒 Saat Seç';
@@ -373,7 +460,7 @@ export default function NewGoalScreen() {
             <Text style={styles.backText}>‹ Geri</Text>
           </TouchableOpacity>
 
-          <Text style={styles.title}>YENİ HEDEF</Text>
+          <Text style={styles.title}>{isEditing ? 'HEDEFİ DÜZENLE' : 'YENİ HEDEF'}</Text>
 
           <View style={styles.form}>
             <TextInput
@@ -383,55 +470,108 @@ export default function NewGoalScreen() {
               placeholderTextColor="#6B6B6B"
               style={styles.input}
             />
-            <TextInput
-              value={description}
-              onChangeText={setDescription}
-              placeholder={descriptionPlaceholder}
-              placeholderTextColor="#6B6B6B"
-              style={[styles.input, styles.textArea]}
-              multiline
-              numberOfLines={4}
-              textAlignVertical="top"
-            />
+            {!isEditing && (
+              <TextInput
+                value={description}
+                onChangeText={setDescription}
+                placeholder={descriptionPlaceholder}
+                placeholderTextColor="#6B6B6B"
+                style={[styles.input, styles.textArea]}
+                multiline
+                numberOfLines={4}
+                textAlignVertical="top"
+              />
+            )}
           </View>
 
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>ZAMANLAMA</Text>
             <View style={styles.row}>
+              {!isEditing && (
+                <TouchableOpacity
+                  style={[styles.timingButton, styles.rowItem, selectedDate && styles.timingButtonActive]}
+                  activeOpacity={0.75}
+                  onPress={handleOpenDateModal}>
+                  <Text style={styles.timingButtonLabel}>{dateButtonLabel}</Text>
+                </TouchableOpacity>
+              )}
               <TouchableOpacity
-                style={[styles.timingButton, styles.rowItem, selectedDate && styles.timingButtonActive]}
-                activeOpacity={0.75}
-                onPress={handleOpenDateModal}>
-                <Text style={styles.timingButtonLabel}>{dateButtonLabel}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.timingButton, styles.rowItem, selectedTime && styles.timingButtonActive]}
+                style={[
+                  styles.timingButton,
+                  !isEditing && styles.rowItem,
+                  selectedTime && styles.timingButtonActive,
+                ]}
                 activeOpacity={0.75}
                 onPress={handleOpenTimeModal}>
                 <Text style={styles.timingButtonLabel}>{timeButtonLabel}</Text>
               </TouchableOpacity>
             </View>
-            <Text style={styles.warningText}>
-              ⚠ Bugünü seçebilirsin, ama geçmiş bir günü ya da bugünün geçmiş bir saatini seçemezsin.
-            </Text>
-          </View>
-
-          <View style={styles.section}>
-            <TouchableOpacity
-              style={styles.repeatButton}
-              activeOpacity={0.8}
-              onPress={handleOpenRepeatModal}>
-              <Text style={styles.repeatButtonLabel}>TEKRAR AYARLARI</Text>
-            </TouchableOpacity>
-            {!!repeatConfig && (
-              <Text style={styles.repeatSummary}>{formatRepeatSummary(repeatConfig)}</Text>
+            {!isEditing && (
+              <Text style={styles.warningText}>
+                ⚠ Bugünü seçebilirsin, ama geçmiş bir günü ya da bugünün geçmiş bir saatini seçemezsin.
+              </Text>
             )}
           </View>
+
+          {!isEditing && (
+            <View style={styles.section}>
+              <TouchableOpacity
+                style={styles.repeatButton}
+                activeOpacity={0.8}
+                onPress={handleOpenRepeatModal}>
+                <Text style={styles.repeatButtonLabel}>TEKRAR AYARLARI</Text>
+              </TouchableOpacity>
+              {!!repeatConfig && (
+                <>
+                  <Text style={styles.repeatSummary}>{formatRepeatSummary(repeatConfig)}</Text>
+                  <TouchableOpacity
+                    style={[styles.timingButton, selectedEndDate && styles.timingButtonActive]}
+                    activeOpacity={0.75}
+                    onPress={handleOpenEndDateModal}>
+                    <Text style={styles.timingButtonLabel}>{endDateButtonLabel}</Text>
+                  </TouchableOpacity>
+                  {!!selectedEndDate && (
+                    <TouchableOpacity
+                      style={styles.clearEndHit}
+                      activeOpacity={0.7}
+                      onPress={() => setSelectedEndDate(null)}>
+                      <Text style={styles.clearEndText}>Bitiş tarihini kaldır</Text>
+                    </TouchableOpacity>
+                  )}
+                  <Text style={styles.warningText}>
+                    Bitiş tarihi geçen tekrarlı görevler otomatik arşive düşer.
+                  </Text>
+                </>
+              )}
+            </View>
+          )}
+
+          {isEditing && editingGoal?.repeat && (
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>BİTİŞ TARİHİ</Text>
+              <TouchableOpacity
+                style={[styles.timingButton, selectedEndDate && styles.timingButtonActive]}
+                activeOpacity={0.75}
+                onPress={handleOpenEndDateModal}>
+                <Text style={styles.timingButtonLabel}>{endDateButtonLabel}</Text>
+              </TouchableOpacity>
+              {!!selectedEndDate && (
+                <TouchableOpacity
+                  style={styles.clearEndHit}
+                  activeOpacity={0.7}
+                  onPress={() => setSelectedEndDate(null)}>
+                  <Text style={styles.clearEndText}>Bitiş tarihini kaldır</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
         </ScrollView>
 
         <View style={styles.footer}>
           <TouchableOpacity style={styles.saveButton} activeOpacity={0.85} onPress={handleSave}>
-            <Text style={styles.saveButtonLabel}>KAYDET VE SÖZÜNÜ TUT</Text>
+            <Text style={styles.saveButtonLabel}>
+              {isEditing ? 'DEĞİŞİKLİKLERİ KAYDET' : 'KAYDET VE SÖZÜNÜ TUT'}
+            </Text>
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
@@ -444,7 +584,9 @@ export default function NewGoalScreen() {
         onRequestClose={() => setDateModalVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>TARİH SEÇ</Text>
+            <Text style={styles.modalTitle}>
+              {calendarTarget === 'end' ? 'BİTİŞ TARİHİ' : 'TARİH SEÇ'}
+            </Text>
 
             <View style={styles.calendarHeader}>
               <TouchableOpacity
@@ -725,6 +867,15 @@ const styles = StyleSheet.create({
     color: '#8A8A8A',
     fontSize: 13,
     fontWeight: '500',
+  },
+  clearEndHit: {
+    alignSelf: 'flex-start',
+    paddingVertical: 2,
+  },
+  clearEndText: {
+    color: '#8A8A8A',
+    fontSize: 12,
+    fontWeight: '600',
   },
   footer: {
     paddingHorizontal: 24,

@@ -13,7 +13,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useRouter } from 'expo-router';
 
-import { useUser } from '@/context/GoalContext';
+import { PasswordField } from '@/components/password-field';
+import { GENDER_OPTIONS, useUser, type Gender } from '@/context/GoalContext';
+import { isValidPassword, PASSWORD_RULE_TEXT } from '@/lib/password';
 
 // ---------------------------------------------------------------------------
 // Mock akış: Register -> Login -> Welcome -> Survey -> Result
@@ -102,6 +104,8 @@ export default function App() {
   const [registerName, setRegisterName] = useState('');
   const [registerEmail, setRegisterEmail] = useState('');
   const [registerPassword, setRegisterPassword] = useState('');
+  const [registerConfirmPassword, setRegisterConfirmPassword] = useState('');
+  const [registerGender, setRegisterGender] = useState<Gender | null>(null);
   const [registerError, setRegisterError] = useState('');
 
   // Login form state
@@ -127,9 +131,31 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isReady]);
 
+  const registerPasswordsMatch =
+    registerPassword.length > 0 && registerPassword === registerConfirmPassword;
+  const registerPasswordValid = isValidPassword(registerPassword);
+  const canRegister =
+    registerName.trim().length > 0 &&
+    registerEmail.trim().length > 0 &&
+    registerPasswordValid &&
+    registerPasswordsMatch &&
+    registerGender !== null;
+
   function handleRegister() {
     if (!registerName.trim() || !registerEmail.trim() || !registerPassword.trim()) {
       setRegisterError('Lütfen tüm alanları doldur.');
+      return;
+    }
+    if (!isValidPassword(registerPassword)) {
+      setRegisterError(PASSWORD_RULE_TEXT);
+      return;
+    }
+    if (registerPassword !== registerConfirmPassword) {
+      setRegisterError('Şifreler eşleşmiyor.');
+      return;
+    }
+    if (!registerGender) {
+      setRegisterError('Cinsiyet seçimi zorunlu.');
       return;
     }
     setUser({
@@ -137,6 +163,7 @@ export default function App() {
       email: registerEmail.trim(),
       password: registerPassword,
       avatarUri: null,
+      gender: registerGender,
     });
     setRegisterError('');
     setScreen('login');
@@ -168,6 +195,7 @@ export default function App() {
 
   function handleGoToRegister() {
     setLoginError('');
+    setRegisterConfirmPassword('');
     setScreen('register');
   }
 
@@ -238,18 +266,60 @@ export default function App() {
             autoCapitalize="none"
             autoCorrect={false}
           />
-          <TextInput
+          <Text style={styles.sectionLabel}>CİNSİYET</Text>
+          <View style={styles.genderRow}>
+            {GENDER_OPTIONS.map((option) => {
+              const selected = registerGender === option.value;
+              return (
+                <TouchableOpacity
+                  key={option.value}
+                  style={[styles.genderButton, selected && styles.genderButtonActive]}
+                  activeOpacity={0.8}
+                  onPress={() => {
+                    setRegisterGender(option.value);
+                    setRegisterError('');
+                  }}>
+                  <Text style={[styles.genderLabel, selected && styles.genderLabelActive]}>
+                    {option.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          <PasswordField
             value={registerPassword}
-            onChangeText={setRegisterPassword}
+            onChangeText={(text) => {
+              setRegisterPassword(text);
+              setRegisterError('');
+            }}
             placeholder="Şifre"
-            placeholderTextColor="#6B6B6B"
-            style={styles.input}
-            secureTextEntry
-            autoCapitalize="none"
-            autoCorrect={false}
           />
+          <Text style={styles.hintText}>{PASSWORD_RULE_TEXT}</Text>
+          <PasswordField
+            value={registerConfirmPassword}
+            onChangeText={(text) => {
+              setRegisterConfirmPassword(text);
+              setRegisterError('');
+            }}
+            placeholder="Şifreyi Onayla"
+            style={
+              registerConfirmPassword.length > 0 && !registerPasswordsMatch
+                ? styles.inputMismatch
+                : undefined
+            }
+          />
+          {registerPassword.length > 0 && !registerPasswordValid && (
+            <Text style={styles.errorText}>{PASSWORD_RULE_TEXT}</Text>
+          )}
+          {registerConfirmPassword.length > 0 && !registerPasswordsMatch && (
+            <Text style={styles.errorText}>Şifreler eşleşmiyor.</Text>
+          )}
           {!!registerError && <Text style={styles.errorText}>{registerError}</Text>}
-          <TouchableOpacity style={styles.button} activeOpacity={0.85} onPress={handleRegister}>
+          <TouchableOpacity
+            style={[styles.button, !canRegister && styles.buttonDisabled]}
+            activeOpacity={0.85}
+            onPress={handleRegister}
+            disabled={!canRegister}>
             <Text style={styles.buttonLabel}>KAYIT OL</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.linkHit} activeOpacity={0.7} onPress={handleGoToLogin}>
@@ -272,15 +342,10 @@ export default function App() {
             autoCapitalize="none"
             autoCorrect={false}
           />
-          <TextInput
+          <PasswordField
             value={loginPassword}
             onChangeText={setLoginPassword}
             placeholder="Şifre"
-            placeholderTextColor="#6B6B6B"
-            style={styles.input}
-            secureTextEntry
-            autoCapitalize="none"
-            autoCorrect={false}
           />
           {!!loginError && <Text style={styles.errorText}>{loginError}</Text>}
           <TouchableOpacity style={styles.button} activeOpacity={0.85} onPress={handleLogin}>
@@ -399,6 +464,35 @@ const styles = StyleSheet.create({
     marginTop: 40,
     gap: 14,
   },
+  sectionLabel: {
+    color: '#8A8A8A',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 1.4,
+  },
+  genderRow: {
+    gap: 8,
+  },
+  genderButton: {
+    backgroundColor: '#121212',
+    borderWidth: 1,
+    borderColor: '#2A2A2A',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  genderButtonActive: {
+    borderColor: '#C1121F',
+    backgroundColor: '#1A0A0C',
+  },
+  genderLabel: {
+    color: '#C8C8C8',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  genderLabelActive: {
+    color: '#FFFFFF',
+  },
   input: {
     backgroundColor: '#121212',
     borderWidth: 1,
@@ -409,10 +503,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: Platform.OS === 'web' ? 16 : 14,
   },
+  inputMismatch: {
+    borderColor: '#C1121F',
+  },
   errorText: {
     color: '#FF5C5C',
     fontSize: 13,
     fontWeight: '600',
+  },
+  hintText: {
+    color: '#8A8A8A',
+    fontSize: 12,
+    fontWeight: '500',
   },
   button: {
     backgroundColor: '#C1121F',
@@ -428,6 +530,9 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     letterSpacing: 0.6,
+  },
+  buttonDisabled: {
+    opacity: 0.4,
   },
   secondaryButton: {
     backgroundColor: '#141414',

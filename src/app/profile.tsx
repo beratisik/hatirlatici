@@ -13,7 +13,7 @@ import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 
-import { getRank, useUser } from '@/context/GoalContext';
+import { describeGender, getRank, useUser } from '@/context/GoalContext';
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -84,6 +84,7 @@ export default function ProfileScreen() {
           <View style={styles.userInfo}>
             <Text style={styles.userName}>{displayName}</Text>
             <Text style={styles.userEmail}>{displayEmail}</Text>
+            <Text style={styles.userGender}>{describeGender(user?.gender ?? null)}</Text>
             <Text style={styles.avatarHint}>Fotoğraf yüklemek için avatara dokun</Text>
           </View>
         </View>
@@ -206,6 +207,11 @@ const styles = StyleSheet.create({
     color: '#8A8A8A',
     fontSize: 13,
     fontWeight: '500',
+  },
+  userGender: {
+    color: '#C8C8C8',
+    fontSize: 12,
+    fontWeight: '600',
   },
   avatarHint: {
     color: '#6B6B6B',

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -9,10 +10,12 @@ import {
   useGoals,
   type Goal,
 } from '@/context/GoalContext';
+import { confirmDeleteGoal, GoalMenuButton, GoalMenuSheet } from '@/components/goal-menu';
 
 export default function ArchiveScreen() {
   const router = useRouter();
-  const { goals } = useGoals();
+  const { goals, restoreGoal, deleteGoal } = useGoals();
+  const [menuGoal, setMenuGoal] = useState<Goal | null>(null);
   const archivedGoals = goals.filter((goal) => goal.archived).slice().reverse();
 
   return (
@@ -33,7 +36,13 @@ export default function ArchiveScreen() {
         data={archivedGoals}
         keyExtractor={(item) => item.id}
         contentContainerStyle={archivedGoals.length === 0 ? styles.emptyListContent : styles.listContent}
-        renderItem={({ item }) => <ArchivedGoalCard goal={item} />}
+        renderItem={({ item }) => (
+          <ArchivedGoalCard
+            goal={item}
+            onRestore={() => restoreGoal(item.id)}
+            onOpenMenu={() => setMenuGoal(item)}
+          />
+        )}
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyTitle}>ARŞİV BOŞ</Text>
@@ -43,11 +52,33 @@ export default function ArchiveScreen() {
           </View>
         }
       />
+
+      <GoalMenuSheet
+        visible={!!menuGoal}
+        onClose={() => setMenuGoal(null)}
+        onEdit={
+          menuGoal
+            ? () => router.push({ pathname: '/new-goal', params: { id: menuGoal.id } })
+            : undefined
+        }
+        onDelete={() => {
+          if (!menuGoal) return;
+          confirmDeleteGoal(menuGoal.title, () => deleteGoal(menuGoal.id));
+        }}
+      />
     </SafeAreaView>
   );
 }
 
-function ArchivedGoalCard({ goal }: { goal: Goal }) {
+function ArchivedGoalCard({
+  goal,
+  onRestore,
+  onOpenMenu,
+}: {
+  goal: Goal;
+  onRestore: () => void;
+  onOpenMenu: () => void;
+}) {
   const hasSchedule = !!(goal.date || goal.time);
   const repeatLabel = formatRepeatSummary(goal.repeat);
   const reason = describeArchiveReason(goal.archiveReason);
@@ -56,7 +87,10 @@ function ArchivedGoalCard({ goal }: { goal: Goal }) {
     <View style={styles.card}>
       <View style={styles.cardHeader}>
         <Text style={styles.cardTitle}>{goal.title}</Text>
-        <Text style={[styles.reasonText, { color: reason.color }]}>{reason.label}</Text>
+        <View style={styles.cardHeaderRight}>
+          <Text style={[styles.reasonText, { color: reason.color }]}>{reason.label}</Text>
+          <GoalMenuButton onPress={onOpenMenu} />
+        </View>
       </View>
 
       {!!goal.description && <Text style={styles.cardDescription}>{goal.description}</Text>}
@@ -70,7 +104,16 @@ function ArchivedGoalCard({ goal }: { goal: Goal }) {
         <View style={styles.badge}>
           <Text style={styles.badgeText}>{repeatLabel}</Text>
         </View>
+        {!!goal.endDate && (
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>Bitiş {goal.endDate}</Text>
+          </View>
+        )}
       </View>
+
+      <TouchableOpacity style={styles.restoreButton} activeOpacity={0.85} onPress={onRestore}>
+        <Text style={styles.restoreButtonLabel}>GERİ YÜKLE</Text>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -150,6 +193,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 10,
   },
+  cardHeaderRight: {
+    alignItems: 'flex-end',
+    gap: 4,
+  },
   cardTitle: {
     flex: 1,
     color: '#C8C8C8',
@@ -184,5 +231,20 @@ const styles = StyleSheet.create({
     color: '#C7C7C7',
     fontSize: 12,
     fontWeight: '600',
+  },
+  restoreButton: {
+    marginTop: 8,
+    backgroundColor: '#1A1A1A',
+    borderWidth: 1,
+    borderColor: '#3A3A3A',
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  restoreButtonLabel: {
+    color: '#F5C400',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.8,
   },
 });
