@@ -32,6 +32,21 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Profil fotoğrafını seçmek için galerine erişmemiz gerekiyor.",
+          "cameraPermission": "Profil fotoğrafı çekmek için kameraya erişmemiz gerekiyor.",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#C1121F",
+          "defaultChannel": "default"
+        }
       ]
     ],
     "experiments": {
