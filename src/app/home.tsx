@@ -14,8 +14,10 @@ import {
   isTimeEditLocked,
   OUTCOME_POINTS,
   useGoals,
+  useWater,
   type Goal,
   type GoalOutcome,
+  type WaterSummary,
 } from '@/context/GoalContext';
 import { ConfrontationModal } from '@/components/confrontation-modal';
 import { formatDayHeading, HomeCalendar } from '@/components/home-calendar';
@@ -28,11 +30,13 @@ import {
   GoalMenuSheet,
 } from '@/components/goal-menu';
 import { goalsOnDay, startOfToday } from '@/lib/schedule';
+import { formatLiters, nextSlotAfter } from '@/lib/water';
 
 export default function HomeScreen() {
   const router = useRouter();
   const { profile: profileParam } = useLocalSearchParams<{ profile?: string }>();
   const { goals, completeGoal, archiveGoal, pauseGoal, finishGoal, deleteGoal, score, profile } = useGoals();
+  const { water, logWater } = useWater();
   const [menuGoal, setMenuGoal] = useState<Goal | null>(null);
   const [lockWarning, setLockWarning] = useState(false);
   const [confrontation, setConfrontation] = useState<{ streak: number; message: string } | null>(
@@ -72,6 +76,10 @@ export default function HomeScreen() {
   function handleOpenCalendar() {
     setSelectedDay(startOfToday());
     setCalendarVisible(true);
+  }
+
+  function handleOpenWater() {
+    router.push('/water');
   }
 
   function handleComplete(goal: Goal) {
@@ -131,6 +139,8 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
       </View>
+
+      <WaterStrip water={water} onOpen={handleOpenWater} onDrink={logWater} />
 
       {activeGoals.length > 0 && (
         <Text style={styles.swipeHint}>
@@ -283,6 +293,58 @@ export default function HomeScreen() {
         onClose={() => setConfrontation(null)}
       />
     </SafeAreaView>
+  );
+}
+
+function WaterStrip({
+  water,
+  onOpen,
+  onDrink,
+}: {
+  water: WaterSummary;
+  onOpen: () => void;
+  onDrink: (ml: number) => void;
+}) {
+  if (!water.settings) {
+    return (
+      <TouchableOpacity style={styles.waterSetup} activeOpacity={0.85} onPress={onOpen}>
+        <Text style={styles.waterSetupTitle}>💧 SU TAKİBİNİ KUR</Text>
+        <Text style={styles.waterSetupHint}>
+          Boyunu ve kilonu gir, günlük litreni ve uyarı saatlerini koç belirlesin.
+        </Text>
+      </TouchableOpacity>
+    );
+  }
+
+  const done = water.remainingMl === 0;
+  const nextSlot = nextSlotAfter(water.slots, new Date());
+
+  return (
+    <View style={styles.waterCard}>
+      <TouchableOpacity style={styles.waterMain} activeOpacity={0.8} onPress={onOpen}>
+        <View style={styles.waterTopRow}>
+          <Text style={styles.waterTitle}>💧 SU</Text>
+          <Text style={[styles.waterRemaining, done && styles.waterRemainingDone]}>
+            {done ? 'HEDEF TAMAM' : `${formatLiters(water.remainingMl)} kaldı`}
+          </Text>
+        </View>
+        <View style={styles.waterTrack}>
+          <View style={[styles.waterFill, { width: `${water.progress * 100}%` }]} />
+        </View>
+        <Text style={styles.waterMeta}>
+          {water.consumedMl} / {water.targetMl} ml
+          {nextSlot && !done ? ` · sıradaki uyarı ${nextSlot}` : ''}
+        </Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.waterDrinkButton}
+        activeOpacity={0.85}
+        onPress={() => onDrink(water.sipMl)}>
+        <Text style={styles.waterDrinkValue}>+{water.sipMl}</Text>
+        <Text style={styles.waterDrinkUnit}>ml</Text>
+      </TouchableOpacity>
+    </View>
   );
 }
 
@@ -522,6 +584,100 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingHorizontal: 24,
     paddingBottom: 10,
+  },
+  waterSetup: {
+    marginHorizontal: 20,
+    marginBottom: 12,
+    backgroundColor: '#141414',
+    borderWidth: 1,
+    borderColor: '#2A2A2A',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    gap: 4,
+  },
+  waterSetupTitle: {
+    color: '#F5F5F5',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  waterSetupHint: {
+    color: '#7A7A7A',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  waterCard: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 10,
+    marginHorizontal: 20,
+    marginBottom: 12,
+  },
+  waterMain: {
+    flex: 1,
+    backgroundColor: '#141414',
+    borderWidth: 1,
+    borderColor: '#2A2A2A',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 8,
+  },
+  waterTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  waterTitle: {
+    color: '#8A8A8A',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.6,
+  },
+  waterRemaining: {
+    color: '#F5F5F5',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  waterRemainingDone: {
+    color: '#3DDC84',
+  },
+  waterTrack: {
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#1F1F1F',
+    borderWidth: 1,
+    borderColor: '#2E2E2E',
+    overflow: 'hidden',
+  },
+  waterFill: {
+    height: '100%',
+    backgroundColor: '#C1121F',
+  },
+  waterMeta: {
+    color: '#7A7A7A',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  waterDrinkButton: {
+    width: 76,
+    backgroundColor: '#141414',
+    borderWidth: 1,
+    borderColor: '#C1121F',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  waterDrinkValue: {
+    color: '#F5F5F5',
+    fontSize: 17,
+    fontWeight: '900',
+  },
+  waterDrinkUnit: {
+    color: '#8A8A8A',
+    fontSize: 10,
+    fontWeight: '700',
   },
   calendarOverlay: {
     flex: 1,

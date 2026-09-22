@@ -12,11 +12,23 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
   cancelGoalAlarm,
+  cancelWaterReminders,
   presentStreakCoachNotification,
   scheduleGoalAlarm,
   syncGoalAlarms,
   syncRankReminder,
+  syncWaterReminders,
 } from '@/lib/notifications';
+import {
+  buildWaterSlots,
+  calculateDailyWaterMl,
+  isWaterSettings,
+  normalizeWaterDay,
+  perSlotMl,
+  type WaterDay,
+  type WaterEntry,
+  type WaterSettings,
+} from '@/lib/water';
 
 const STORAGE_KEY = '@hatirlatici/state';
 
@@ -322,6 +334,19 @@ type PersistedState = {
   user: User | null;
   isLoggedIn: boolean;
   profile: string | null;
+  waterSettings: WaterSettings | null;
+  waterDay: WaterDay | null;
+};
+
+export type WaterSummary = {
+  settings: WaterSettings | null;
+  targetMl: number;
+  consumedMl: number;
+  remainingMl: number;
+  progress: number;
+  entries: WaterEntry[];
+  slots: string[];
+  sipMl: number;
 };
 
 type NewGoalInput = Omit<
@@ -373,6 +398,12 @@ type GoalContextValue = {
   login: () => void;
   logout: () => void;
   setProfile: (profile: string) => void;
+
+  water: WaterSummary;
+  saveWaterSettings: (settings: WaterSettings) => void;
+  logWater: (ml: number) => void;
+  undoLastWater: () => void;
+  clearWaterPlan: () => void;
 
   score: number;
 };
@@ -479,6 +510,8 @@ export function GoalProvider({ children }: { children: ReactNode }) {
   const [score, setScore] = useState(0);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [profile, setProfileState] = useState<string | null>(null);
+  const [waterSettings, setWaterSettings] = useState<WaterSettings | null>(null);
+  const [waterDay, setWaterDay] = useState<WaterDay>(() => ({ date: todayIso(), entries: [] }));
   const skipPersist = useRef(true);
   const goalsRef = useRef<Goal[]>([]);
   goalsRef.current = goals;
@@ -497,6 +530,8 @@ export function GoalProvider({ children }: { children: ReactNode }) {
           setUserState(normalizeUser(parsed.user));
           setIsLoggedIn(Boolean(parsed.isLoggedIn && parsed.user));
           setProfileState(typeof parsed.profile === 'string' ? parsed.profile : null);
+          setWaterSettings(isWaterSettings(parsed.waterSettings) ? parsed.waterSettings : null);
+          setWaterDay(normalizeWaterDay(parsed.waterDay, todayIso()));
         }
       } catch {
         // Bozuk kayıt varsa boş state ile devam et.
@@ -522,10 +557,12 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       user,
       isLoggedIn,
       profile,
+      waterSettings,
+      waterDay,
     };
 
     void AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  }, [goals, score, user, isLoggedIn, profile, isReady]);
+  }, [goals, score, user, isLoggedIn, profile, waterSettings, waterDay, isReady]);
 
   useEffect(() => {
     if (!isReady || !isLoggedIn) return;
@@ -535,6 +572,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!isReady) return;
     setGoals((prev) => maintainGoals(prev));
+    setWaterDay((prev) => (prev.date === todayIso() ? prev : { date: todayIso(), entries: [] }));
   }, [isReady]);
 
   useEffect(() => {
@@ -704,6 +742,70 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const water = useMemo<WaterSummary>(() => {
+    const targetMl = waterSettings
+      ? calculateDailyWaterMl(waterSettings.heightCm, waterSettings.weightKg)
+      : 0;
+    const slots = waterSettings
+      ? buildWaterSlots(waterSettings.wakeTime, waterSettings.intervalMinutes)
+      : [];
+    const consumedMl = waterDay.entries.reduce((total, entry) => total + entry.ml, 0);
+
+    return {
+      settings: waterSettings,
+      targetMl,
+      consumedMl,
+      remainingMl: Math.max(0, targetMl - consumedMl),
+      progress: targetMl > 0 ? Math.min(1, consumedMl / targetMl) : 0,
+      entries: waterDay.entries,
+      slots,
+      sipMl: perSlotMl(targetMl, slots.length),
+    };
+  }, [waterSettings, waterDay]);
+
+  // Uyarılar yalnızca plan ya da aralık değişince yeniden kurulur.
+  useEffect(() => {
+    if (!isReady || !isLoggedIn) return;
+    if (!waterSettings) {
+      void cancelWaterReminders();
+      return;
+    }
+    void syncWaterReminders(water.slots, water.sipMl);
+  }, [isReady, isLoggedIn, waterSettings, water.slots, water.sipMl]);
+
+  const saveWaterSettings = useCallback((settings: WaterSettings) => {
+    setWaterSettings(settings);
+    setWaterDay((prev) => (prev.date === todayIso() ? prev : { date: todayIso(), entries: [] }));
+  }, []);
+
+  const logWater = useCallback((ml: number) => {
+    if (ml <= 0) return;
+    const day = todayIso();
+    const now = new Date();
+    const entry: WaterEntry = {
+      id: `${Date.now()}-${Math.round(Math.random() * 1000)}`,
+      ml,
+      time: `${padDatePart(now.getHours())}:${padDatePart(now.getMinutes())}`,
+    };
+    setWaterDay((prev) =>
+      prev.date === day
+        ? { date: day, entries: [...prev.entries, entry] }
+        : { date: day, entries: [entry] },
+    );
+  }, []);
+
+  const undoLastWater = useCallback(() => {
+    setWaterDay((prev) =>
+      prev.entries.length === 0 ? prev : { ...prev, entries: prev.entries.slice(0, -1) },
+    );
+  }, []);
+
+  const clearWaterPlan = useCallback(() => {
+    void cancelWaterReminders();
+    setWaterSettings(null);
+    setWaterDay({ date: todayIso(), entries: [] });
+  }, []);
+
   const setUser = useCallback((nextUser: User) => {
     setUserState({
       ...nextUser,
@@ -760,6 +862,11 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       login,
       logout,
       setProfile,
+      water,
+      saveWaterSettings,
+      logWater,
+      undoLastWater,
+      clearWaterPlan,
       score,
     }),
     [
@@ -782,6 +889,11 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       login,
       logout,
       setProfile,
+      water,
+      saveWaterSettings,
+      logWater,
+      undoLastWater,
+      clearWaterPlan,
       score,
     ],
   );
@@ -795,6 +907,11 @@ export function useGoals() {
     throw new Error('useGoals, bir <GoalProvider> içinde kullanılmalı.');
   }
   return context;
+}
+
+export function useWater() {
+  const { water, saveWaterSettings, logWater, undoLastWater, clearWaterPlan } = useGoals();
+  return { water, saveWaterSettings, logWater, undoLastWater, clearWaterPlan };
 }
 
 export function useUser() {

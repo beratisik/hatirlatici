@@ -3,9 +3,11 @@ import * as Notifications from 'expo-notifications';
 
 import type { Goal, Rank } from '@/context/GoalContext';
 import { getRankNotificationContent } from '@/lib/rankNotifications';
+import { MAX_WATER_SLOTS, parseClockTime } from '@/lib/water';
 
 const RANK_REMINDER_ID = 'rank-daily-reminder';
 const ANDROID_CHANNEL_ID = 'default';
+const WATER_DATA_KEY = 'water';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -138,6 +140,55 @@ export async function presentStreakCoachNotification(title: string, body: string
     });
   } catch {
     // Native dışında yok say.
+  }
+}
+
+function waterReminderId(index: number) {
+  return `water-reminder-${index}`;
+}
+
+export async function cancelWaterReminders(): Promise<void> {
+  for (let index = 0; index < MAX_WATER_SLOTS; index++) {
+    try {
+      await Notifications.cancelScheduledNotificationAsync(waterReminderId(index));
+    } catch {
+      // Zaten yoksa sessiz geç.
+    }
+  }
+}
+
+export async function syncWaterReminders(slots: string[], sipMl: number): Promise<void> {
+  try {
+    await cancelWaterReminders();
+    if (slots.length === 0) return;
+
+    const granted = await requestNotificationPermission();
+    if (!granted) return;
+
+    await Promise.all(
+      slots.slice(0, MAX_WATER_SLOTS).map(async (slot, index) => {
+        const clock = parseClockTime(slot);
+        if (!clock) return;
+
+        await Notifications.scheduleNotificationAsync({
+          identifier: waterReminderId(index),
+          content: {
+            title: 'Su içme saati.',
+            body: `${sipMl} ml iç ve uygulamada işaretle. İşaretlemezsen hedeften düşmez.`,
+            sound: true,
+            data: { [WATER_DATA_KEY]: true },
+          },
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.DAILY,
+            hour: clock.hour,
+            minute: clock.minute,
+            channelId: ANDROID_CHANNEL_ID,
+          },
+        });
+      }),
+    );
+  } catch {
+    // Web / izin reddi.
   }
 }
 

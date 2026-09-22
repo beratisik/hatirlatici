@@ -14,4 +14,8 @@ export async function syncGoalAlarms(_goals: Goal[]): Promise<void> {}
 
 export async function presentStreakCoachNotification(_title: string, _body: string): Promise<void> {}
 
+export async function cancelWaterReminders(): Promise<void> {}
+
+export async function syncWaterReminders(_slots: string[], _sipMl: number): Promise<void> {}
+
 export async function syncRankReminder(_rank: Rank): Promise<void> {}
