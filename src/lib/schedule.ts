@@ -1,10 +1,17 @@
 import {
+  padDatePart,
   parseGoalDate,
+  parseGoalTime,
   startOfToday,
+  todayIso,
   type Goal,
 } from '@/context/GoalContext';
 
 export { startOfToday };
+
+export function formatDisplayDate(day: Date): string {
+  return `${padDatePart(day.getDate())}.${padDatePart(day.getMonth() + 1)}.${day.getFullYear()}`;
+}
 
 export function startOfDay(value: Date): Date {
   const day = new Date(value);
@@ -117,4 +124,77 @@ export function goalOccursOn(goal: Goal, day: Date): boolean {
 
 export function goalsOnDay(goals: Goal[], day: Date): Goal[] {
   return goals.filter((goal) => goalOccursOn(goal, day));
+}
+
+function toIsoDay(day: Date): string {
+  return `${day.getFullYear()}-${padDatePart(day.getMonth() + 1)}-${padDatePart(day.getDate())}`;
+}
+
+function applyClock(day: Date, time: string): Date {
+  const clock = parseGoalTime(time);
+  const next = new Date(day);
+  if (clock) next.setHours(clock.hour, clock.minute, 0, 0);
+  else next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+export function lastOccurrenceOnOrBefore(goal: Goal, day: Date): Date | null {
+  const origin = goalOrigin(goal);
+  const end = startOfDay(day);
+  if (end.getTime() < origin.getTime()) return null;
+
+  const probe = { ...goal, archived: false };
+  for (let offset = 0; offset <= 400; offset++) {
+    const candidate = addDays(end, -offset);
+    if (candidate.getTime() < origin.getTime()) return null;
+    if (goalOccursOn(probe, candidate)) return candidate;
+  }
+  return null;
+}
+
+export function nextOccurrenceAfter(goal: Goal, day: Date): Date | null {
+  const probe = { ...goal, archived: false };
+  for (let offset = 1; offset <= 400; offset++) {
+    const candidate = addDays(startOfDay(day), offset);
+    if (goalOccursOn(probe, candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Anımsatıcı ancak tarih/saat yoksa ya da belirlenen zaman geçtiyse
+ * tamamlanabilir. Tekrarlıysa bir önceki tekrar da gecikmiş sayılır.
+ */
+export function canCompleteReminder(goal: Goal, now = new Date()): boolean {
+  if (goal.type !== 'reminder' || goal.archived) return false;
+  if (goal.repeat && goal.lastCompletedDate === todayIso()) return false;
+
+  const hasDate = !!goal.date;
+  const hasTime = !!goal.time;
+  if (!hasDate && !hasTime) return true;
+
+  if (goal.repeat) {
+    const last = lastOccurrenceOnOrBefore(goal, startOfToday());
+    if (!last) return false;
+    if (goal.lastCompletedDate === toIsoDay(last)) return false;
+    return now.getTime() >= applyClock(last, goal.time).getTime();
+  }
+
+  const day = parseGoalDate(goal.date) ?? startOfToday();
+  return now.getTime() >= applyClock(day, goal.time).getTime();
+}
+
+export function describeNextReminder(goal: Goal): string {
+  const next = nextOccurrenceAfter(goal, startOfToday());
+  if (!next) return 'Bugün tamamlandı.';
+
+  const when = [formatDisplayDate(next), goal.time].filter(Boolean).join(' · ');
+  const repeat = goal.repeat;
+  if (repeat?.unit === 'gun' && repeat.interval === 1) {
+    return 'Bugün tamamlandı. Yarın tekrar gelecek.';
+  }
+  if (repeat?.unit === 'hafta' && repeat.interval === 1) {
+    return `Bugün tamamlandı. Haftaya (${when}) tekrar gelecek.`;
+  }
+  return `Bugün tamamlandı. Sonraki: ${when}.`;
 }

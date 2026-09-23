@@ -24,6 +24,28 @@ function goalAlarmId(goalId: string) {
   return `goal-alarm-${goalId}`;
 }
 
+function streakWarningId(goalId: string) {
+  return `streak-warning-${goalId}`;
+}
+
+/**
+ * Anımsatıcılar tarafsız konuşur, koç hedefleri sert. Metinlerin karışmaması için
+ * ayrım tek yerde yapılır.
+ */
+function goalAlarmContent(goal: Goal) {
+  if (goal.type === 'reminder') {
+    return {
+      title: 'Hatırlatma',
+      body: `${goal.title} saati geldi.`,
+    };
+  }
+  const note = goal.description.trim();
+  return {
+    title: goal.title,
+    body: note || `${goal.title} — bahanen bitti. Şimdi yap.`,
+  };
+}
+
 function parseClock(time: string): { hour: number; minute: number } | null {
   const match = /^(\d{2}):(\d{2})$/.exec(time);
   if (!match) return null;
@@ -76,8 +98,7 @@ export async function scheduleGoalAlarm(goal: Goal): Promise<void> {
     if (!clock) return;
 
     const content = {
-      title: 'Hedef saatin geldi.',
-      body: `${goal.title} — bahanen bitti. Şimdi yap.`,
+      ...goalAlarmContent(goal),
       sound: true as const,
       data: { goalId: goal.id },
     };
@@ -124,6 +145,49 @@ export async function scheduleGoalAlarm(goal: Goal): Promise<void> {
 
 export async function syncGoalAlarms(goals: Goal[]): Promise<void> {
   await Promise.all(goals.map((goal) => scheduleGoalAlarm(goal)));
+}
+
+export async function cancelStreakWarning(goalId: string): Promise<void> {
+  try {
+    await Notifications.cancelScheduledNotificationAsync(streakWarningId(goalId));
+  } catch {
+    // Yoksa sessiz geç.
+  }
+}
+
+/**
+ * Gün bitmeden serinin kopacağını haber veren tek seferlik koç uyarısı.
+ * Kullanıcı işaretlediği an çağıran taraf bunu iptal eder.
+ */
+export async function scheduleStreakWarning(
+  goalId: string,
+  fireAt: Date,
+  body: string,
+): Promise<void> {
+  try {
+    await cancelStreakWarning(goalId);
+    if (fireAt.getTime() <= Date.now()) return;
+
+    const granted = await requestNotificationPermission();
+    if (!granted) return;
+
+    await Notifications.scheduleNotificationAsync({
+      identifier: streakWarningId(goalId),
+      content: {
+        title: 'SERİN TEHLİKEDE',
+        body,
+        sound: true,
+        data: { goalId, streakWarning: true },
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DATE,
+        date: fireAt,
+        channelId: ANDROID_CHANNEL_ID,
+      },
+    });
+  } catch {
+    // Web / izin reddi.
+  }
 }
 
 export async function presentStreakCoachNotification(title: string, body: string): Promise<void> {

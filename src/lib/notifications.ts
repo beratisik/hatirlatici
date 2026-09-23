@@ -12,6 +12,14 @@ export async function scheduleGoalAlarm(_goal: Goal): Promise<void> {}
 
 export async function syncGoalAlarms(_goals: Goal[]): Promise<void> {}
 
+export async function cancelStreakWarning(_goalId: string): Promise<void> {}
+
+export async function scheduleStreakWarning(
+  _goalId: string,
+  _fireAt: Date,
+  _body: string,
+): Promise<void> {}
+
 export async function presentStreakCoachNotification(_title: string, _body: string): Promise<void> {}
 
 export async function cancelWaterReminders(): Promise<void> {}

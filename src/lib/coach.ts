@@ -237,6 +237,7 @@ export function buildCoachGoal(input: {
   programDays?: number;
   analysisSummary?: string;
 }): {
+  type: 'coach';
   title: string;
   description: string;
   date: string;
@@ -257,15 +258,11 @@ export function buildCoachGoal(input: {
   const analysisLine = input.analysisSummary?.trim() ?? '';
   const endDate = input.programDays ? addDaysToDisplay(input.programDays) : '';
 
+  // Tarih, saat ve gün dilimi kartta ayrı satırda gösterildiği için burada tekrarlanmaz.
   return {
+    type: 'coach',
     title: CATEGORY_TITLES[input.category](input.sessionMinutes),
-    description: [
-      `${categoryLabel(input.category)} · ${slot.label} ${slot.time}–${endTime}.`,
-      analysisLine,
-      reasonLine,
-    ]
-      .filter(Boolean)
-      .join(' '),
+    description: [analysisLine, reasonLine].filter(Boolean).join(' '),
     date: todayDisplayDate(),
     time: slot.time,
     endTime,

@@ -29,19 +29,10 @@ import {
 import { WHEEL_CONTAINER_HEIGHT, WheelPicker } from '@/components/wheel-picker';
 
 // ---------------------------------------------------------------------------
-// "Yeni Görev Ekle" ekranı — tarih için gerçek bir takvim, saat için iOS
-// tarzı çekmeli (wheel) seçici, tekrar için birim + sayı seçici içerir.
+// "Anımsatıcı" ekranı — tarih için gerçek bir takvim, saat için iOS tarzı
+// çekmeli (wheel) seçici, tekrar için birim + sayı seçici içerir.
+// Bu modülün dili tarafsızdır; koç tavrı yalnızca koç hedeflerine aittir.
 // ---------------------------------------------------------------------------
-
-// Anket sonucundaki profile göre açıklama kutusuna gelen "sert" placeholder'lar.
-const DESCRIPTION_PLACEHOLDERS: Record<string, string> = {
-  chaos: 'Bu işi nasıl bir düzene sokacaksın?',
-  procrastinator: 'Kendine hangi bahaneyi üretecektin?',
-  enthusiast: 'Kaçıncı günde bırakacaksın bunu?',
-  perfectionist: 'Hangi kusuru görmezden gelmeyi göze alacaksın?',
-};
-
-const DEFAULT_DESCRIPTION_PLACEHOLDER = 'Açıklama';
 
 const MONTH_NAMES = [
   'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
@@ -78,8 +69,9 @@ export default function NewGoalScreen() {
   const { profile, id } = useLocalSearchParams<{ profile?: string; id?: string }>();
   const editingGoal = id ? goals.find((goal) => goal.id === id) : undefined;
   const isEditing = !!editingGoal;
-  const descriptionPlaceholder =
-    (profile && DESCRIPTION_PLACEHOLDERS[profile]) || DEFAULT_DESCRIPTION_PLACEHOLDER;
+  const isCoachEdit = editingGoal?.type === 'coach';
+  // Son saat kilidi koç modülüne ait bir yaptırım; anımsatıcılar serbestçe düzenlenir.
+  const timeLocked = Boolean(editingGoal && isCoachEdit && isTimeEditLocked(editingGoal));
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -261,7 +253,7 @@ export default function NewGoalScreen() {
   }, [restrictTimeToNow, draftHourIndex, nowHour, nowMinute]);
 
   function handleOpenTimeModal() {
-    if (isEditing && editingGoal && isTimeEditLocked(editingGoal)) {
+    if (timeLocked) {
       Alert.alert('SERT KOÇ', EDIT_LOCK_MESSAGE);
       return;
     }
@@ -307,7 +299,7 @@ export default function NewGoalScreen() {
 
   function handleSave() {
     if (!title.trim()) {
-      Alert.alert('Eksik Bilgi', 'Görev başlığı olmadan söz veremezsin.');
+      Alert.alert('Eksik bilgi', 'Bir başlık girmelisin.');
       return;
     }
 
@@ -318,13 +310,13 @@ export default function NewGoalScreen() {
         : '';
 
     if (isEditing && editingGoal) {
-      if (isTimeEditLocked(editingGoal) && timeValue !== editingGoal.time) {
+      if (timeLocked && timeValue !== editingGoal.time) {
         Alert.alert('SERT KOÇ', EDIT_LOCK_MESSAGE);
         return;
       }
       updateGoal(editingGoal.id, {
         title: title.trim(),
-        time: isTimeEditLocked(editingGoal) ? editingGoal.time : timeValue,
+        time: timeLocked ? editingGoal.time : timeValue,
         endDate: editingGoal.repeat ? endValue : editingGoal.endDate,
       });
       router.back();
@@ -332,6 +324,7 @@ export default function NewGoalScreen() {
     }
 
     addGoal({
+      type: 'reminder',
       title: title.trim(),
       description: description.trim(),
       date: selectedDate
@@ -354,7 +347,6 @@ export default function NewGoalScreen() {
   const timeButtonLabel = selectedTime
     ? `${pad(selectedTime.hour)}:${pad(selectedTime.minute)}`
     : '🕒 Saat Seç';
-  const timeLocked = Boolean(isEditing && editingGoal && isTimeEditLocked(editingGoal));
 
   const daysInMonth = getDaysInMonth(calendarYear, calendarMonth);
   const leadingBlanks = getMondayFirstWeekday(calendarYear, calendarMonth);
@@ -376,13 +368,15 @@ export default function NewGoalScreen() {
             <Text style={styles.backText}>‹ Geri</Text>
           </TouchableOpacity>
 
-          <Text style={styles.title}>{isEditing ? 'HEDEFİ DÜZENLE' : 'YENİ HEDEF'}</Text>
+          <Text style={styles.title}>
+            {isEditing ? (isCoachEdit ? 'HEDEFİ DÜZENLE' : 'ANIMSATICIYI DÜZENLE') : 'YENİ ANIMSATICI'}
+          </Text>
 
           <View style={styles.form}>
             <TextInput
               value={title}
               onChangeText={setTitle}
-              placeholder="Ne yapacaksın?"
+              placeholder="Başlık"
               placeholderTextColor="#6B6B6B"
               style={styles.input}
             />
@@ -390,7 +384,7 @@ export default function NewGoalScreen() {
               <TextInput
                 value={description}
                 onChangeText={setDescription}
-                placeholder={descriptionPlaceholder}
+                placeholder="Not (opsiyonel)"
                 placeholderTextColor="#6B6B6B"
                 style={[styles.input, styles.textArea]}
                 multiline
@@ -489,7 +483,7 @@ export default function NewGoalScreen() {
         <View style={styles.footer}>
           <TouchableOpacity style={styles.saveButton} activeOpacity={0.85} onPress={handleSave}>
             <Text style={styles.saveButtonLabel}>
-              {isEditing ? 'DEĞİŞİKLİKLERİ KAYDET' : 'KAYDET VE SÖZÜNÜ TUT'}
+              {isEditing ? 'DEĞİŞİKLİKLERİ KAYDET' : 'KAYDET'}
             </Text>
           </TouchableOpacity>
         </View>

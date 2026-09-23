@@ -8,6 +8,7 @@ import {
   describeArchiveReason,
   formatRepeatSummary,
   formatTimeRange,
+  GOAL_TYPE_COLORS,
   isFinished,
   isPaused,
   useGoals,
@@ -92,9 +93,14 @@ function ArchivedGoalCard({
   const finished = isFinished(goal);
 
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, { borderLeftColor: GOAL_TYPE_COLORS[goal.type] }]}>
       <View style={styles.cardHeader}>
-        <Text style={styles.cardTitle}>{goal.title}</Text>
+        <View style={styles.cardTitleBlock}>
+          <Text style={[styles.cardKicker, { color: GOAL_TYPE_COLORS[goal.type] }]}>
+            {goal.type === 'coach' ? 'KOÇ' : 'ANIMSATICI'}
+          </Text>
+          <Text style={styles.cardTitle}>{goal.title}</Text>
+        </View>
         <View style={styles.cardHeaderRight}>
           <Text style={[styles.reasonText, { color: reason.color }]}>{reason.label}</Text>
           <GoalMenuButton onPress={onOpenMenu} />
@@ -119,7 +125,7 @@ function ArchivedGoalCard({
             <Text style={styles.badgeText}>Bitiş {goal.endDate}</Text>
           </View>
         )}
-        {goal.streak > 0 && (
+        {goal.type === 'coach' && goal.streak > 0 && (
           <View style={styles.badge}>
             <Text style={styles.streakBadgeText}>🔥 {goal.streak} seri korundu</Text>
           </View>
@@ -203,10 +209,20 @@ const styles = StyleSheet.create({
     backgroundColor: '#101010',
     borderWidth: 1,
     borderColor: '#1E1E1E',
+    borderLeftWidth: 3,
     borderRadius: 14,
     padding: 16,
     gap: 8,
     opacity: 0.9,
+  },
+  cardTitleBlock: {
+    flex: 1,
+    gap: 3,
+  },
+  cardKicker: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.4,
   },
   cardHeader: {
     flexDirection: 'row',

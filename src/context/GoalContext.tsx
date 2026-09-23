@@ -12,9 +12,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
   cancelGoalAlarm,
+  cancelStreakWarning,
   cancelWaterReminders,
   presentStreakCoachNotification,
   scheduleGoalAlarm,
+  scheduleStreakWarning,
   syncGoalAlarms,
   syncRankReminder,
   syncWaterReminders,
@@ -70,7 +72,8 @@ export type ArchiveReason =
   | 'manual'
   | 'ended'
   | 'paused'
-  | 'finished';
+  | 'finished'
+  | 'completed';
 export type GoalOutcome = 'onTime' | 'late' | 'missed';
 export type Gender = 'kadin' | 'erkek' | 'belirtmek_istemiyorum';
 export type PlanCategory = 'kitap' | 'yuruyus' | 'vucut' | 'muzik' | 'dil' | 'akademik';
@@ -86,8 +89,20 @@ export function describeGender(gender: Gender | null): string {
   return GENDER_OPTIONS.find((item) => item.value === gender)?.label ?? 'Belirtilmedi';
 }
 
+/**
+ * 'reminder' = düz anımsatıcı: puan, seri ve swipe yok.
+ * 'coach'    = gelişim hedefi: puan, seri ve swipe mekaniği burada çalışır.
+ */
+export type GoalType = 'reminder' | 'coach';
+
+export const GOAL_TYPE_COLORS: Record<GoalType, string> = {
+  reminder: '#3E7CB1',
+  coach: '#C1121F',
+};
+
 export type Goal = {
   id: string;
+  type: GoalType;
   title: string;
   description: string;
   date: string;
@@ -209,6 +224,56 @@ export function isRepeating(goal: Goal): boolean {
   return goal.repeat != null;
 }
 
+export function isCoachGoal(goal: Goal): boolean {
+  return goal.type === 'coach';
+}
+
+export function isReminderGoal(goal: Goal): boolean {
+  return goal.type === 'reminder';
+}
+
+/** Tekrarlı bir anımsatıcı bugün için işaretlenmiş mi. Puan ya da seri anlamı taşımaz. */
+export function isReminderDoneToday(goal: Goal): boolean {
+  return goal.type === 'reminder' && !!goal.repeat && goal.lastCompletedDate === todayIso();
+}
+
+export const STREAK_WARNING_HOUR = 21;
+const STREAK_WARNING_LATEST_MINUTES = 23 * 60 + 30;
+const STREAK_WARNING_GRACE_MINUTES = 30;
+
+export function isStreakAtRisk(goal: Goal): boolean {
+  return (
+    goal.type === 'coach' &&
+    !goal.archived &&
+    goal.repeat != null &&
+    goal.streak > 0 &&
+    goal.lastCompletedDate !== todayIso()
+  );
+}
+
+/**
+ * Serisi tehlikedeki bir koç hedefi için akşam uyarısının bugünkü saati.
+ * Görev saati akşamdan sonraysa uyarı görevin ardına kayar, gece yarısını geçmez.
+ */
+export function getStreakWarningAt(goal: Goal, now = new Date()): Date | null {
+  if (!isStreakAtRisk(goal)) return null;
+
+  const clock = parseGoalTime(goal.endTime || goal.time);
+  const afterTask = clock ? clock.hour * 60 + clock.minute + STREAK_WARNING_GRACE_MINUTES : 0;
+  const minutes = Math.min(
+    Math.max(STREAK_WARNING_HOUR * 60, afterTask),
+    STREAK_WARNING_LATEST_MINUTES,
+  );
+
+  const fireAt = new Date(now);
+  fireAt.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
+  return fireAt.getTime() > now.getTime() ? fireAt : null;
+}
+
+export function streakWarningMessage(goal: Goal): string {
+  return `Dikkat! ${goal.title} için ${goal.streak} günlük serin bitmek üzere. Harekete geç!`;
+}
+
 export function isHandledToday(goal: Goal): boolean {
   return isRepeating(goal) && goal.lastCompletedDate === todayIso();
 }
@@ -244,6 +309,8 @@ export function describeArchiveReason(reason: ArchiveReason | null): { label: st
       return { label: '⏸ Duraklatıldı', color: '#D98C2B' };
     case 'finished':
       return { label: '🎓 Bitirildi', color: '#3DDC84' };
+    case 'completed':
+      return { label: '✓ Tamamlandı', color: '#3DDC84' };
     case 'manual':
     default:
       return { label: '🗄 Arşivlendi', color: '#8A8A8A' };
@@ -386,6 +453,7 @@ type GoalContextValue = {
   updateGoal: (id: string, patch: GoalPatch) => void;
   deleteGoal: (id: string) => void;
   completeGoal: (id: string, outcome: GoalOutcome) => CompleteResult;
+  completeReminder: (id: string) => void;
   archiveGoal: (id: string) => void;
   pauseGoal: (id: string) => void;
   finishGoal: (id: string) => Goal | null;
@@ -433,6 +501,12 @@ function normalizeGoals(raw: unknown): Goal[] {
     .filter((item): item is Goal => !!item && typeof item === 'object' && typeof item.id === 'string')
     .map((item) => ({
       ...item,
+      // Tip alanı eklenmeden önce kaydedilenler: kategori taşıyanlar koç planıdır.
+      type: isGoalType(item.type)
+        ? item.type
+        : isPlanCategory(item.category)
+          ? ('coach' as const)
+          : ('reminder' as const),
       endDate: typeof item.endDate === 'string' ? item.endDate : '',
       endTime:
         typeof item.endTime === 'string' && item.endTime
@@ -456,6 +530,10 @@ function normalizeGoals(raw: unknown): Goal[] {
     }));
 }
 
+function isGoalType(value: unknown): value is GoalType {
+  return value === 'reminder' || value === 'coach';
+}
+
 function isPlanCategory(value: unknown): value is PlanCategory {
   return (
     value === 'kitap' ||
@@ -476,7 +554,13 @@ function resetBrokenStreaks(goals: Goal[]): Goal[] {
   const yesterday = yesterdayIso();
   let changed = false;
   const next = goals.map((goal) => {
-    if (goal.archived || goal.archiveReason === 'paused' || !goal.repeat || goal.streak <= 0) {
+    if (
+      goal.type !== 'coach' ||
+      goal.archived ||
+      goal.archiveReason === 'paused' ||
+      !goal.repeat ||
+      goal.streak <= 0
+    ) {
       return goal;
     }
     const last = goal.lastCompletedDate;
@@ -512,6 +596,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
   const [profile, setProfileState] = useState<string | null>(null);
   const [waterSettings, setWaterSettings] = useState<WaterSettings | null>(null);
   const [waterDay, setWaterDay] = useState<WaterDay>(() => ({ date: todayIso(), entries: [] }));
+  const [dayStamp, setDayStamp] = useState(() => todayIso());
   const skipPersist = useRef(true);
   const goalsRef = useRef<Goal[]>([]);
   goalsRef.current = goals;
@@ -580,6 +665,38 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     void syncGoalAlarms(goalsRef.current);
   }, [isReady, isLoggedIn]);
 
+  // Serisi tehlikeye giren koç hedefleri için akşam uyarısını kur, riski
+  // kalmayanlarınkini kaldır.
+  useEffect(() => {
+    if (!isReady || !isLoggedIn) return;
+    const now = new Date();
+    for (const goal of goals) {
+      if (goal.type !== 'coach') continue;
+      const fireAt = getStreakWarningAt(goal, now);
+      if (fireAt) {
+        void scheduleStreakWarning(goal.id, fireAt, streakWarningMessage(goal));
+      } else {
+        void cancelStreakWarning(goal.id);
+      }
+    }
+  }, [isReady, isLoggedIn, goals]);
+
+  // Gün 00:00'da dönünce, uygulama açıkken de işaretlenmemiş serileri sıfırla.
+  useEffect(() => {
+    if (!isReady) return;
+    const midnight = startOfToday();
+    midnight.setDate(midnight.getDate() + 1);
+    const timer = setTimeout(
+      () => {
+        setDayStamp(todayIso());
+        setGoals((prev) => maintainGoals(prev));
+        setWaterDay((prev) => (prev.date === todayIso() ? prev : { date: todayIso(), entries: [] }));
+      },
+      Math.max(1000, midnight.getTime() - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [isReady, dayStamp]);
+
   const addGoal = useCallback((goal: NewGoalInput) => {
     const created: Goal = {
       ...goal,
@@ -620,6 +737,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
 
   const deleteGoal = useCallback((id: string) => {
     void cancelGoalAlarm(id);
+    void cancelStreakWarning(id);
     setGoals((prev) => prev.filter((item) => item.id !== id));
   }, []);
 
@@ -634,6 +752,8 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     const day = todayIso();
     const goal = goalsRef.current.find((item) => item.id === id);
     if (!goal || goal.archived) return empty;
+    // Puan ve seri yalnızca koç modülüne ait; anımsatıcılar tamamlanmaz.
+    if (goal.type !== 'coach') return empty;
     if (goal.repeat && goal.lastCompletedDate === day) return empty;
 
     let nextStreak = goal.streak;
@@ -692,6 +812,44 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       bonus: Boolean(bonus),
       message: getConfrontationMessage(nextStreak, Boolean(bonus)),
     };
+  }, []);
+
+  /**
+   * Anımsatıcıyı tamamlandı olarak işaretler. Tekrarlıysa arşive düşmez,
+   * sadece bugünü kapatır ve bir sonraki tekrarını bekler.
+   */
+  const completeReminder = useCallback((id: string) => {
+    const goal = goalsRef.current.find((item) => item.id === id);
+    if (!goal || goal.type !== 'reminder' || goal.archived) return;
+
+    if (goal.repeat) {
+      setGoals((prev) =>
+        prev.map((item) =>
+          item.id === id
+            ? {
+                ...item,
+                lastCompletedDate: todayIso(),
+                completionCount: item.completionCount + 1,
+              }
+            : item,
+        ),
+      );
+      return;
+    }
+
+    void cancelGoalAlarm(id);
+    setGoals((prev) =>
+      prev.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              completionCount: item.completionCount + 1,
+              archived: true,
+              archiveReason: 'completed' as const,
+            }
+          : item,
+      ),
+    );
   }, []);
 
   const archiveGoal = useCallback((id: string) => {
@@ -851,6 +1009,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       updateGoal,
       deleteGoal,
       completeGoal,
+      completeReminder,
       archiveGoal,
       pauseGoal,
       finishGoal,
@@ -878,6 +1037,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       updateGoal,
       deleteGoal,
       completeGoal,
+      completeReminder,
       archiveGoal,
       pauseGoal,
       finishGoal,

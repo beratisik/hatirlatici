@@ -1,5 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useRef, useState } from 'react';
 import {
+  ActivityIndicator,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,117 +13,179 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useRouter } from 'expo-router';
 
-import { addMinutesToClock, useGoals, type PlanCategory, type TimeSlot } from '@/context/GoalContext';
+import { padDatePart, useGoals, type PlanCategory } from '@/context/GoalContext';
+import { PLAN_CATEGORIES, categoryLabel } from '@/lib/coach';
 import {
-  BOOK_Q1_OPTIONS,
-  BOOK_Q2_OPTIONS,
-  PLAN_CATEGORIES,
-  TIME_SLOTS,
-  WALK_Q1_OPTIONS,
-  WALK_Q2_OPTIONS,
-  WALK_Q3_OPTIONS,
-  analyzeBookReading,
-  analyzeWalking,
-  buildCoachGoal,
-  hasIntakeQuestions,
-  recommendedSlot,
-  sessionMinutesForPlan,
-} from '@/lib/coach';
+  goalsFromCoachPlan,
+  requestCoachPlan,
+  type CoachAiPlan,
+  type CoachIntake,
+} from '@/lib/openai-coach';
+import { WalkCoachSteps } from '@/components/walk-coach-steps';
+import { WheelPicker } from '@/components/wheel-picker';
 
-type Step = 'category' | 'questions' | 'slot';
+const SCHEDULES = [
+  { id: 'weekday', label: 'Pzt-Cuma Tam Zamanlı', homeBased: false },
+  { id: 'intense', label: '6 Gün Yoğun', homeBased: false },
+  { id: 'student', label: 'Esnek/Öğrenci', homeBased: true },
+  { id: 'remote', label: 'Evden Çalışan', homeBased: true },
+] as const;
+
+const FOCUS_WINDOWS = ['Yolda', 'Sabah uyanınca', 'Akşam yemeği sonrası', 'Yatmadan önce'] as const;
+const BLOCKERS = ['Akşam yorgunluğu', 'Ekran bağımlılığı', 'Plansızlık'] as const;
+
+const HOURS = Array.from({ length: 24 }, (_, index) => padDatePart(index));
+const MINUTES = Array.from({ length: 12 }, (_, index) => padDatePart(index * 5));
+
+type ResourceChoice = 'own' | 'coach';
+type ScheduleId = (typeof SCHEDULES)[number]['id'];
+type ClockField = 'start' | 'end';
 
 export default function CoachPlanScreen() {
   const router = useRouter();
   const { addGoal } = useGoals();
+  const abortRef = useRef<AbortController | null>(null);
 
-  const [step, setStep] = useState<Step>('category');
-  const [category, setCategory] = useState<PlanCategory | null>(null);
-  const [booksLast6Months, setBooksLast6Months] = useState<string | null>(null);
-  const [focusId, setFocusId] = useState<string | null>(null);
-  const [reason, setReason] = useState('');
-  const [walkFrequency, setWalkFrequency] = useState<string | null>(null);
-  const [walkCapacityId, setWalkCapacityId] = useState<string | null>(null);
-  const [walkSlotPref, setWalkSlotPref] = useState<TimeSlot | null>(null);
-  const [slot, setSlot] = useState<TimeSlot | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState<PlanCategory | null>(null);
+  const [wizardStep, setWizardStep] = useState(0);
+  const [resourceChoice, setResourceChoice] = useState<ResourceChoice | null>(null);
+  const [resourceName, setResourceName] = useState('');
+  const [scheduleId, setScheduleId] = useState<ScheduleId | null>(null);
+  const [startHour, setStartHour] = useState(8);
+  const [startMinute, setStartMinute] = useState(6);
+  const [endHour, setEndHour] = useState(18);
+  const [endMinute, setEndMinute] = useState(6);
+  const [activeClock, setActiveClock] = useState<ClockField>('start');
+  const [walkPlace, setWalkPlace] = useState<string | null>(null);
+  const [walkFitness, setWalkFitness] = useState<string | null>(null);
+  const [focusWindow, setFocusWindow] = useState<string | null>(null);
+  const [blocker, setBlocker] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [plan, setPlan] = useState<CoachAiPlan | null>(null);
 
-  const bookAnalysis = useMemo(() => {
-    if (category !== 'kitap' || !booksLast6Months || !focusId) return null;
-    return analyzeBookReading(booksLast6Months, focusId, reason);
-  }, [category, booksLast6Months, focusId, reason]);
+  const schedule = SCHEDULES.find((item) => item.id === scheduleId) ?? null;
+  const homeBased = schedule?.homeBased ?? false;
+  const startTime = `${HOURS[startHour]}:${MINUTES[startMinute]}`;
+  const endTime = `${HOURS[endHour]}:${MINUTES[endMinute]}`;
+  const categoryName = categoryLabel(selectedCategory);
+  const isWalk = selectedCategory === 'yuruyus';
 
-  const walkAnalysis = useMemo(() => {
-    if (category !== 'yuruyus' || !walkFrequency || !walkCapacityId || !walkSlotPref) return null;
-    return analyzeWalking(walkFrequency, walkCapacityId, walkSlotPref);
-  }, [category, walkFrequency, walkCapacityId, walkSlotPref]);
-
-  const analysis = category === 'kitap' ? bookAnalysis : category === 'yuruyus' ? walkAnalysis : null;
-
-  const suggestedSlot = useMemo(() => {
-    if (analysis?.recommendedSlot) return analysis.recommendedSlot;
-    if (booksLast6Months && focusId) return recommendedSlot(booksLast6Months, focusId);
-    return 'ogle' as TimeSlot;
-  }, [analysis, booksLast6Months, focusId]);
-
-  const minutes = analysis?.sessionMinutes
-    ?? (category && !hasIntakeQuestions(category) ? sessionMinutesForPlan(category) : 15);
-  const bookQuestionsReady = !!booksLast6Months && !!focusId && reason.trim().length > 0;
-  const walkQuestionsReady = !!walkFrequency && !!walkCapacityId && !!walkSlotPref;
-  const questionsReady = category === 'yuruyus' ? walkQuestionsReady : bookQuestionsReady;
-
-  function handleCategory(next: PlanCategory) {
-    setCategory(next);
-    setSlot(null);
-    setBooksLast6Months(null);
-    setFocusId(null);
-    setReason('');
-    setWalkFrequency(null);
-    setWalkCapacityId(null);
-    setWalkSlotPref(null);
-    if (hasIntakeQuestions(next)) {
-      setStep('questions');
-      return;
-    }
-    setStep('slot');
+  function closeWizard() {
+    abortRef.current?.abort();
+    setSelectedCategory(null);
+    setWizardStep(0);
+    setResourceChoice(null);
+    setResourceName('');
+    setScheduleId(null);
+    setWalkPlace(null);
+    setWalkFitness(null);
+    setFocusWindow(null);
+    setBlocker(null);
+    setLoading(false);
+    setError(null);
+    setPlan(null);
   }
 
   function handleBack() {
-    if (step === 'slot' && hasIntakeQuestions(category)) {
-      setStep('questions');
+    if (plan || loading || error) {
+      closeWizard();
       return;
     }
-    if (step === 'questions') {
-      setStep('category');
+    if (selectedCategory && wizardStep > 0) {
+      setWizardStep((step) => step - 1);
+      return;
+    }
+    if (selectedCategory) {
+      closeWizard();
       return;
     }
     router.back();
   }
 
-  function handleCreate() {
-    if (!category) return;
-    const chosenSlot = slot ?? (hasIntakeQuestions(category) ? suggestedSlot : 'sabah');
-    addGoal(
-      buildCoachGoal({
-        category,
-        slot: chosenSlot,
-        sessionMinutes: minutes,
-        coachReason:
-          category === 'kitap'
-            ? reason
-            : category === 'yuruyus' && walkFrequency && walkCapacityId && walkSlotPref
-              ? [
-                  WALK_Q1_OPTIONS.find((item) => item.id === walkFrequency)?.label,
-                  WALK_Q2_OPTIONS.find((item) => item.id === walkCapacityId)?.label,
-                  WALK_Q3_OPTIONS.find((item) => item.id === walkSlotPref)?.label,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')
-              : '',
-        programDays: analysis?.programDays,
-        analysisSummary: analysis?.summary,
-      }),
-    );
+  function canAdvance(): boolean {
+    if (wizardStep === 0) {
+      if (isWalk) return !!walkPlace;
+      if (resourceChoice === 'coach') return true;
+      return resourceChoice === 'own' && resourceName.trim().length > 0;
+    }
+    if (wizardStep === 1) return isWalk ? !!walkFitness : !!scheduleId;
+    if (wizardStep === 2) return startTime !== endTime;
+    return !!focusWindow && !!blocker;
+  }
+
+  function buildIntake(): CoachIntake | null {
+    if (!focusWindow || !blocker) return null;
+    if (isWalk) {
+      if (!walkPlace || !walkFitness) return null;
+      return {
+        kind: 'walk',
+        selectedCategory: categoryName,
+        resourceName: null,
+        scheduleLabel: '',
+        hoursKind: 'commute',
+        place: walkPlace,
+        fitness: walkFitness,
+        startTime,
+        endTime,
+        focusWindow,
+        blocker,
+      };
+    }
+    if (!schedule) return null;
+    return {
+      kind: 'default',
+      selectedCategory: categoryName,
+      resourceName: resourceChoice === 'own' ? resourceName.trim() : null,
+      scheduleLabel: schedule.label,
+      hoursKind: schedule.homeBased ? 'home' : 'commute',
+      place: null,
+      fitness: null,
+      startTime,
+      endTime,
+      focusWindow,
+      blocker,
+    };
+  }
+
+  async function generatePlan() {
+    const intake = buildIntake();
+    if (!selectedCategory || !intake) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setLoading(true);
+    setError(null);
+    setPlan(null);
+    try {
+      const next = await requestCoachPlan(intake, controller.signal);
+      if (!controller.signal.aborted) setPlan(next);
+    } catch (caught) {
+      if (controller.signal.aborted) return;
+      setError(caught instanceof Error ? caught.message : 'Plan hazırlanamadı.');
+    } finally {
+      if (!controller.signal.aborted) setLoading(false);
+    }
+  }
+
+  function handleNext() {
+    if (!canAdvance()) return;
+    if (wizardStep < 3) {
+      setWizardStep((step) => step + 1);
+      return;
+    }
+    void generatePlan();
+  }
+
+  function handleAccept() {
+    if (!selectedCategory || !plan) return;
+    for (const goal of goalsFromCoachPlan(selectedCategory, plan)) {
+      addGoal(goal);
+    }
     router.replace('/home');
   }
+
+  const wizardOpen = !!selectedCategory;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -132,171 +196,238 @@ export default function CoachPlanScreen() {
           <Text style={styles.backText}>‹ Geri</Text>
         </TouchableOpacity>
         <Text style={styles.title}>KOÇTAN PLAN AL</Text>
-        <Text style={styles.subtitle}>
-          {step === 'category' && 'Neyi düzeltmek istiyorsun?'}
-          {step === 'questions' && 'Cevapların planı belirler. Yalan söyleme.'}
-          {step === 'slot' &&
-            (hasIntakeQuestions(category)
-              ? 'Cevapların analiz edildi. Başlangıç ve bitiş saati buradan çıkar.'
-              : 'Saati seç. Sonra yine değiştirebilirsin.')}
-        </Text>
+        <Text style={styles.subtitle}>Neyi düzeltmek istiyorsun?</Text>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        {step === 'category' && (
-          <View style={styles.grid}>
-            {PLAN_CATEGORIES.map((item) => (
-              <TouchableOpacity
-                key={item.id}
-                style={styles.categoryCard}
-                activeOpacity={0.85}
-                onPress={() => handleCategory(item.id)}>
-                <Text style={styles.categoryEmoji}>{item.emoji}</Text>
-                <Text style={styles.categoryLabel}>{item.label}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
-
-        {step === 'questions' && category === 'kitap' && (
-          <View style={styles.section}>
-            <Text style={styles.question}>Son 6 ayda ne kadar kitap okudun?</Text>
-            <View style={styles.options}>
-              {BOOK_Q1_OPTIONS.map((item) => (
-                <ChoiceChip
-                  key={item.id}
-                  label={item.label}
-                  selected={booksLast6Months === item.id}
-                  onPress={() => setBooksLast6Months(item.id)}
-                />
-              ))}
-            </View>
-
-            <Text style={styles.question}>Tek oturuşta, dikkatin dağılmadan kaç dakika okuyabilirsin?</Text>
-            <View style={styles.options}>
-              {BOOK_Q2_OPTIONS.map((item) => (
-                <ChoiceChip
-                  key={item.id}
-                  label={item.label}
-                  selected={focusId === item.id}
-                  onPress={() => setFocusId(item.id)}
-                />
-              ))}
-            </View>
-
-            <Text style={styles.question}>Seni bu plana iten asıl sebep nedir?</Text>
-            <TextInput
-              style={styles.reasonInput}
-              value={reason}
-              onChangeText={setReason}
-              placeholder="Tek cümle. Bahanesiz."
-              placeholderTextColor="#6B6B6B"
-              multiline
-            />
-
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.grid}>
+          {PLAN_CATEGORIES.map((item) => (
             <TouchableOpacity
-              style={[styles.primary, !questionsReady && styles.primaryDisabled]}
+              key={item.id}
+              style={styles.categoryCard}
               activeOpacity={0.85}
-              disabled={!questionsReady}
               onPress={() => {
-                setSlot(suggestedSlot);
-                setStep('slot');
+                setSelectedCategory(item.id);
+                setWizardStep(0);
+                setPlan(null);
+                setError(null);
               }}>
-              <Text style={styles.primaryLabel}>PLANI GÖR</Text>
+              <Text style={styles.categoryEmoji}>{item.emoji}</Text>
+              <Text style={styles.categoryLabel}>{item.label}</Text>
             </TouchableOpacity>
-          </View>
-        )}
+          ))}
+        </View>
+      </ScrollView>
 
-        {step === 'questions' && category === 'yuruyus' && (
-          <View style={styles.section}>
-            <Text style={styles.question}>Son 1 ayda ne sıklıkla yürüdün?</Text>
-            <View style={styles.options}>
-              {WALK_Q1_OPTIONS.map((item) => (
-                <ChoiceChip
-                  key={item.id}
-                  label={item.label}
-                  selected={walkFrequency === item.id}
-                  onPress={() => setWalkFrequency(item.id)}
-                />
-              ))}
-            </View>
-
-            <Text style={styles.question}>Durmadan, mola vermeden kaç dakika yürüyebilirsin?</Text>
-            <View style={styles.options}>
-              {WALK_Q2_OPTIONS.map((item) => (
-                <ChoiceChip
-                  key={item.id}
-                  label={item.label}
-                  selected={walkCapacityId === item.id}
-                  onPress={() => setWalkCapacityId(item.id)}
-                />
-              ))}
-            </View>
-
-            <Text style={styles.question}>Günün hangi diliminde bahanen en zayıf?</Text>
-            <View style={styles.options}>
-              {WALK_Q3_OPTIONS.map((item) => (
-                <ChoiceChip
-                  key={item.id}
-                  label={item.label}
-                  selected={walkSlotPref === item.id}
-                  onPress={() => setWalkSlotPref(item.id)}
-                />
-              ))}
-            </View>
-
-            <TouchableOpacity
-              style={[styles.primary, !questionsReady && styles.primaryDisabled]}
-              activeOpacity={0.85}
-              disabled={!questionsReady}
-              onPress={() => {
-                setSlot(suggestedSlot);
-                setStep('slot');
-              }}>
-              <Text style={styles.primaryLabel}>PLANI GÖR</Text>
+      <Modal visible={wizardOpen} animationType="slide" onRequestClose={handleBack}>
+        <SafeAreaView style={styles.safeArea}>
+          <View style={styles.header}>
+            <TouchableOpacity style={styles.backHit} activeOpacity={0.7} onPress={handleBack}>
+              <Text style={styles.backText}>‹ Geri</Text>
             </TouchableOpacity>
+            <Text style={styles.wizardKicker}>{categoryName}</Text>
+            <Text style={styles.title}>
+              {plan
+                ? 'KOÇUN PLANI'
+                : loading
+                  ? 'KOÇ DÜŞÜNÜYOR'
+                  : isWalk
+                    ? `YÜRÜYÜŞ · ${wizardStep + 1}/4`
+                    : `ADIM ${wizardStep + 1} / 4`}
+            </Text>
           </View>
-        )}
 
-        {step === 'slot' && category && (
-          <View style={styles.section}>
-            {analysis ? (
-              <Text style={styles.planSummary}>{analysis.summary}</Text>
-            ) : (
-              <Text style={styles.planSummary}>
-                {minutes} dakikalık günlük plan. Saatleri sonra düzenleyebilirsin.
+          {loading ? (
+            <View style={styles.loadingBox}>
+              <ActivityIndicator size="large" color="#C1121F" />
+              <Text style={styles.loadingText}>
+                Koç bahanelerini analiz edip programını hazırlıyor...
               </Text>
-            )}
-            {TIME_SLOTS.map((item) => {
-              const selected = (slot ?? suggestedSlot) === item.id;
-              const recommended = hasIntakeQuestions(category) && item.id === suggestedSlot;
-              const endTime = addMinutesToClock(item.time, minutes);
-              return (
-                <TouchableOpacity
-                  key={item.id}
-                  style={[styles.slotCard, selected && styles.slotCardSelected]}
-                  activeOpacity={0.85}
-                  onPress={() => setSlot(item.id)}>
+            </View>
+          ) : error ? (
+            <View style={styles.loadingBox}>
+              <Text style={styles.errorText}>{error}</Text>
+              <TouchableOpacity style={styles.primary} activeOpacity={0.85} onPress={() => void generatePlan()}>
+                <Text style={styles.primaryLabel}>TEKRAR DENE</Text>
+              </TouchableOpacity>
+            </View>
+          ) : plan ? (
+            <ScrollView contentContainerStyle={styles.content}>
+              <Text style={styles.summary}>{plan.coach_summary}</Text>
+              <View style={styles.resourceCard}>
+                <Text style={styles.resourceLabel}>{plan.kind === 'walk' ? 'TARZ' : 'KAYNAK'}</Text>
+                <Text style={styles.resourceValue}>
+                  {plan.kind === 'walk' ? plan.assigned_style : plan.assigned_resource}
+                </Text>
+              </View>
+              {plan.tasks.map((task) => (
+                <View key={`${task.scheduled_time}-${task.title}`} style={styles.taskCard}>
                   <View style={styles.slotTop}>
-                    <Text style={styles.slotLabel}>{item.label}</Text>
+                    <Text style={styles.taskTitle}>{task.title}</Text>
                     <Text style={styles.slotTime}>
-                      {item.time}–{endTime}
+                      {task.scheduled_time} · {task.duration_minutes} dk
                     </Text>
                   </View>
-                  <Text style={styles.slotHint}>
-                    {item.hint} · {minutes} dk
-                  </Text>
-                  {recommended && <Text style={styles.recommended}>KOÇUN ÖNERİSİ</Text>}
-                </TouchableOpacity>
-              );
-            })}
+                  <Text style={styles.taskNote}>{task.coach_note}</Text>
+                </View>
+              ))}
+              <TouchableOpacity style={styles.primary} activeOpacity={0.85} onPress={handleAccept}>
+                <Text style={styles.primaryLabel}>GÖREVİ KABUL ET</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          ) : (
+            <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+              {isWalk ? (
+                <WalkCoachSteps
+                  step={wizardStep}
+                  place={walkPlace}
+                  onPlace={setWalkPlace}
+                  fitness={walkFitness}
+                  onFitness={setWalkFitness}
+                  focus={focusWindow}
+                  onFocus={setFocusWindow}
+                  blocker={blocker}
+                  onBlocker={setBlocker}
+                  startTime={startTime}
+                  endTime={endTime}
+                  activeClock={activeClock}
+                  onActiveClock={setActiveClock}
+                  hours={HOURS}
+                  minutes={MINUTES}
+                  startHour={startHour}
+                  startMinute={startMinute}
+                  endHour={endHour}
+                  endMinute={endMinute}
+                  onStartHour={setStartHour}
+                  onStartMinute={setStartMinute}
+                  onEndHour={setEndHour}
+                  onEndMinute={setEndMinute}
+                />
+              ) : null}
 
-            <TouchableOpacity style={styles.primary} activeOpacity={0.85} onPress={handleCreate}>
-              <Text style={styles.primaryLabel}>PLANI BAŞLAT</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-      </ScrollView>
+              {wizardStep === 0 && !isWalk && (
+                <View style={styles.section}>
+                  <Text style={styles.question}>
+                    {categoryName} için elinde belirli bir kaynak/kitap var mı, yoksa koç sana uygun bir
+                    tane mi atasın?
+                  </Text>
+                  <View style={styles.options}>
+                    <ChoiceChip
+                      label="Var"
+                      selected={resourceChoice === 'own'}
+                      onPress={() => setResourceChoice('own')}
+                    />
+                    <ChoiceChip
+                      label="Koç atasın"
+                      selected={resourceChoice === 'coach'}
+                      onPress={() => setResourceChoice('coach')}
+                    />
+                  </View>
+                  {resourceChoice === 'own' && (
+                    <TextInput
+                      value={resourceName}
+                      onChangeText={setResourceName}
+                      placeholder="Kaynağın adı"
+                      placeholderTextColor="#6B6B6B"
+                      style={styles.input}
+                    />
+                  )}
+                </View>
+              )}
+
+              {wizardStep === 1 && !isWalk && (
+                <View style={styles.section}>
+                  <Text style={styles.question}>Haftalık tempon nasıl?</Text>
+                  <View style={styles.options}>
+                    {SCHEDULES.map((item) => (
+                      <ChoiceChip
+                        key={item.id}
+                        label={item.label}
+                        selected={scheduleId === item.id}
+                        onPress={() => setScheduleId(item.id)}
+                      />
+                    ))}
+                  </View>
+                </View>
+              )}
+
+              {wizardStep === 2 && !isWalk && (
+                <View style={styles.section}>
+                  <Text style={styles.question}>
+                    {homeBased
+                      ? 'Genel uyanış ve uyku saatlerin?'
+                      : 'Sabah evden kaçta çıkıyor, akşam kaçta kapıdan giriyorsun?'}
+                  </Text>
+                  <View style={styles.clockRow}>
+                    <ClockButton
+                      label={homeBased ? 'Uyanış' : 'Evden çıkış'}
+                      value={startTime}
+                      active={activeClock === 'start'}
+                      onPress={() => setActiveClock('start')}
+                    />
+                    <ClockButton
+                      label={homeBased ? 'Uyku' : 'Kapıdan giriş'}
+                      value={endTime}
+                      active={activeClock === 'end'}
+                      onPress={() => setActiveClock('end')}
+                    />
+                  </View>
+                  <View style={styles.wheelRow}>
+                    <WheelPicker
+                      key={`${activeClock}-hour`}
+                      data={HOURS}
+                      selectedIndex={activeClock === 'start' ? startHour : endHour}
+                      onSelect={activeClock === 'start' ? setStartHour : setEndHour}
+                    />
+                    <Text style={styles.timeSeparator}>:</Text>
+                    <WheelPicker
+                      key={`${activeClock}-minute`}
+                      data={MINUTES}
+                      selectedIndex={activeClock === 'start' ? startMinute : endMinute}
+                      onSelect={activeClock === 'start' ? setStartMinute : setEndMinute}
+                    />
+                  </View>
+                </View>
+              )}
+
+              {wizardStep === 3 && !isWalk && (
+                <View style={styles.section}>
+                  <Text style={styles.question}>Sana kalan en net vakit hangisi?</Text>
+                  <View style={styles.options}>
+                    {FOCUS_WINDOWS.map((item) => (
+                      <ChoiceChip
+                        key={item}
+                        label={item}
+                        selected={focusWindow === item}
+                        onPress={() => setFocusWindow(item)}
+                      />
+                    ))}
+                  </View>
+                  <Text style={styles.question}>Seni en çok ne baltalıyor?</Text>
+                  <View style={styles.options}>
+                    {BLOCKERS.map((item) => (
+                      <ChoiceChip
+                        key={item}
+                        label={item}
+                        selected={blocker === item}
+                        onPress={() => setBlocker(item)}
+                      />
+                    ))}
+                  </View>
+                </View>
+              )}
+
+              <TouchableOpacity
+                style={[styles.primary, !canAdvance() && styles.primaryDisabled]}
+                activeOpacity={0.85}
+                disabled={!canAdvance()}
+                onPress={handleNext}>
+                <Text style={styles.primaryLabel}>{wizardStep === 3 ? 'PLANI HAZIRLA' : 'DEVAM'}</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          )}
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -316,6 +447,28 @@ function ChoiceChip({
       activeOpacity={0.85}
       onPress={onPress}>
       <Text style={[styles.chipLabel, selected && styles.chipLabelSelected]}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
+function ClockButton({
+  label,
+  value,
+  active,
+  onPress,
+}: {
+  label: string;
+  value: string;
+  active: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      style={[styles.clockButton, active && styles.clockButtonActive]}
+      activeOpacity={0.85}
+      onPress={onPress}>
+      <Text style={styles.clockLabel}>{label}</Text>
+      <Text style={styles.clockValue}>{value}</Text>
     </TouchableOpacity>
   );
 }
@@ -341,12 +494,17 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-  title: {
-    color: '#F2F2F2',
-    fontSize: 32,
+  wizardKicker: {
+    color: '#C1121F',
+    fontSize: 12,
     fontWeight: '800',
     letterSpacing: 1.4,
-    textTransform: 'uppercase',
+  },
+  title: {
+    color: '#F2F2F2',
+    fontSize: 28,
+    fontWeight: '800',
+    letterSpacing: 1.2,
   },
   subtitle: {
     color: '#8A8A8A',
@@ -390,7 +548,6 @@ const styles = StyleSheet.create({
     color: '#F2F2F2',
     fontSize: 16,
     fontWeight: '800',
-    letterSpacing: 0.4,
     lineHeight: 22,
     marginTop: 6,
   },
@@ -419,66 +576,59 @@ const styles = StyleSheet.create({
   chipLabelSelected: {
     color: '#FFFFFF',
   },
-  reasonInput: {
-    minHeight: 100,
+  input: {
     backgroundColor: '#141414',
     borderWidth: 1,
     borderColor: '#2A2A2A',
     borderRadius: 10,
     color: '#F5F5F5',
+    fontSize: 16,
     paddingHorizontal: 16,
     paddingVertical: 14,
-    fontSize: 16,
-    textAlignVertical: 'top',
   },
-  planSummary: {
-    color: '#C8C8C8',
-    fontSize: 14,
-    lineHeight: 20,
+  clockRow: {
+    flexDirection: 'row',
+    gap: 10,
   },
-  slotCard: {
+  clockButton: {
+    flex: 1,
     backgroundColor: '#141414',
     borderWidth: 1,
     borderColor: '#2A2A2A',
-    borderRadius: 14,
-    padding: 16,
-    gap: 6,
-  },
-  slotCardSelected: {
-    borderColor: '#C1121F',
-    backgroundColor: 'rgba(193, 18, 31, 0.12)',
-  },
-  slotTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    borderRadius: 10,
+    paddingVertical: 12,
     alignItems: 'center',
+    gap: 4,
   },
-  slotLabel: {
+  clockButtonActive: {
+    borderColor: '#C1121F',
+  },
+  clockLabel: {
+    color: '#8A8A8A',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  clockValue: {
     color: '#F5F5F5',
     fontSize: 18,
     fontWeight: '800',
   },
-  slotTime: {
-    color: '#C1121F',
-    fontSize: 18,
-    fontWeight: '900',
+  wheelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
   },
-  slotHint: {
+  timeSeparator: {
     color: '#8A8A8A',
-    fontSize: 13,
-  },
-  recommended: {
-    color: '#C1121F',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1,
-    marginTop: 4,
+    fontSize: 24,
+    fontWeight: '700',
   },
   primary: {
     marginTop: 8,
     backgroundColor: '#C1121F',
     borderRadius: 10,
-    paddingVertical: 20,
+    paddingVertical: 18,
     alignItems: 'center',
   },
   primaryDisabled: {
@@ -486,8 +636,86 @@ const styles = StyleSheet.create({
   },
   primaryLabel: {
     color: '#FFFFFF',
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '800',
     letterSpacing: 1,
+  },
+  loadingBox: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 32,
+    gap: 16,
+  },
+  loadingText: {
+    color: '#E4E4E4',
+    fontSize: 16,
+    fontWeight: '700',
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  errorText: {
+    color: '#FF5C5C',
+    fontSize: 15,
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  summary: {
+    color: '#F2F2F2',
+    fontSize: 16,
+    fontWeight: '700',
+    lineHeight: 24,
+  },
+  resourceCard: {
+    backgroundColor: '#141414',
+    borderWidth: 1,
+    borderColor: '#2A2A2A',
+    borderRadius: 12,
+    padding: 14,
+    gap: 4,
+  },
+  resourceLabel: {
+    color: '#8A8A8A',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
+  resourceValue: {
+    color: '#F5F5F5',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  taskCard: {
+    backgroundColor: '#141414',
+    borderWidth: 1,
+    borderColor: '#2A2A2A',
+    borderLeftWidth: 3,
+    borderLeftColor: '#C1121F',
+    borderRadius: 12,
+    padding: 14,
+    gap: 6,
+  },
+  slotTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  taskTitle: {
+    flex: 1,
+    color: '#F5F5F5',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  slotTime: {
+    color: '#C1121F',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  taskNote: {
+    color: '#9A9A9A',
+    fontSize: 13,
+    lineHeight: 18,
   },
 });
