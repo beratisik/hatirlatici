@@ -1,7 +1,7 @@
 import { Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 
-import type { Goal, Rank } from '@/context/GoalContext';
+import { WEEKDAYS, type Goal, type Rank, type Weekday } from '@/context/GoalContext';
 import { getRankNotificationContent } from '@/lib/rankNotifications';
 import { MAX_WATER_SLOTS, parseClockTime } from '@/lib/water';
 
@@ -78,12 +78,30 @@ export async function requestNotificationPermission(): Promise<boolean> {
   return status === 'granted';
 }
 
+const WEEKLY_TRIGGER_DAY: Record<Weekday, number> = {
+  Sunday: 1,
+  Monday: 2,
+  Tuesday: 3,
+  Wednesday: 4,
+  Thursday: 5,
+  Friday: 6,
+  Saturday: 7,
+};
+
 export async function cancelGoalAlarm(goalId: string): Promise<void> {
-  try {
-    await Notifications.cancelScheduledNotificationAsync(goalAlarmId(goalId));
-  } catch {
-    // Yoksa sessiz geç.
-  }
+  const identifiers = [
+    goalAlarmId(goalId),
+    ...WEEKDAYS.map((day) => `${goalAlarmId(goalId)}-${day}`),
+  ];
+  await Promise.all(
+    identifiers.map(async (identifier) => {
+      try {
+        await Notifications.cancelScheduledNotificationAsync(identifier);
+      } catch {
+        // Yoksa sessiz geç.
+      }
+    }),
+  );
 }
 
 export async function scheduleGoalAlarm(goal: Goal): Promise<void> {
@@ -103,7 +121,27 @@ export async function scheduleGoalAlarm(goal: Goal): Promise<void> {
       data: { goalId: goal.id },
     };
 
-    if (goal.repeat) {
+    const weekdays = goal.daysOfWeek ?? [];
+    if (weekdays.length > 0 && weekdays.length < WEEKDAYS.length) {
+      await Promise.all(
+        weekdays.map((day) =>
+          Notifications.scheduleNotificationAsync({
+            identifier: `${goalAlarmId(goal.id)}-${day}`,
+            content,
+            trigger: {
+              type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
+              weekday: WEEKLY_TRIGGER_DAY[day],
+              hour: clock.hour,
+              minute: clock.minute,
+              channelId: ANDROID_CHANNEL_ID,
+            },
+          }),
+        ),
+      );
+      return;
+    }
+
+    if (goal.repeat || weekdays.length === WEEKDAYS.length) {
       await Notifications.scheduleNotificationAsync({
         identifier: goalAlarmId(goal.id),
         content,

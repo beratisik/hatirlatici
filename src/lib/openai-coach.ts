@@ -1,48 +1,50 @@
 import {
   addMinutesToClock,
+  normalizeDaysOfWeek,
   padDatePart,
   startOfToday,
+  WEEKDAYS,
+  type Goal,
   type PlanCategory,
   type RepeatConfig,
   type TimeSlot,
+  type Weekday,
 } from '@/context/GoalContext';
 
 const MODEL = 'gpt-4o-mini';
 const DAILY: RepeatConfig = { unit: 'gun', interval: 1 };
 
-export type CoachPlanKind = 'default' | 'walk';
+const COACH_VOICE = [
+  'Sen acımasız, disiplinli ve taviz vermeyen bir yaşam koçusun. Kullanıcı sana kitap okumak, spor yapmak veya kişisel gelişimiyle ilgili hedeflerini veya bahanelerini yazacak. Onun bahanelerini sert bir dille çürüt. Asla uzun paragraflar yazma, Telegram’da mesajlaşıyor gibi kısa, vurucu ve net konuş. Gerektiğinde sorular sorarak onu köşeye sıkıştır.',
+  'Cevabın her zaman tek bir JSON nesnesi olsun. Başka metin, markdown veya açıklama ekleme.',
+  'Şema: {"coach_message":"sohbet balonunda görünecek sert cevap","actions":[{"type":"create","target_task_id":null,"title":"Görev Başlığı","scheduled_time":"HH:MM","days_of_week":["Monday","Wednesday","Friday"],"duration_minutes":30}]}',
+  'type yalnızca create, update veya delete olabilir. scheduled_time 24 saat HH:MM. duration_minutes 10 ile 60 arası tam sayı. days_of_week İngilizce tam gün adlarıdır: Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday. Her gün ise yedi günün hepsini yaz.',
+  'Aynı işi birkaç güne yaymak için her güne ayrı görev açma. Tek bir action kullan ve günleri days_of_week dizisine koy.',
+  'Kullanıcı mevcut bir görevin saatini, gününü veya süresini değiştirmek isterse create değil update kullan. target_task_id listedeki id olsun. Yeni kayıt açma.',
+  'Kullanıcı bir görevi kaldırmak isterse delete kullan ve target_task_id listedeki id olsun. Create için target_task_id null olsun.',
+  'Görev kilitlemiyorsan, değiştirmiyorsan veya silmiyorsan actions boş dizi olsun.',
+].join(' ');
 
-export type CoachIntake = {
-  kind: CoachPlanKind;
-  selectedCategory: string;
-  resourceName: string | null;
-  scheduleLabel: string;
-  hoursKind: 'commute' | 'home';
-  place: string | null;
-  fitness: string | null;
-  startTime: string;
-  endTime: string;
-  focusWindow: string;
-  blocker: string;
-};
-
-export type CoachAiTask = {
+export type CoachTaskSnapshot = {
+  id: string;
   title: string;
   scheduled_time: string;
+  days_of_week: Weekday[];
   duration_minutes: number;
-  coach_note: string;
-  day_type: 'everyday';
 };
 
-export type CoachAiPlan = {
-  kind: CoachPlanKind;
-  coach_summary: string;
-  assigned_resource: string;
-  assigned_style: string;
-  tasks: CoachAiTask[];
+export type CoachActionType = 'create' | 'update' | 'delete';
+
+export type CoachAction = {
+  type: CoachActionType;
+  target_task_id: string | null;
+  title: string;
+  scheduled_time: string;
+  days_of_week: Weekday[];
+  duration_minutes: number;
 };
 
-export type AiCoachGoalDraft = {
+export type CoachGoalDraft = {
   type: 'coach';
   title: string;
   description: string;
@@ -50,84 +52,50 @@ export type AiCoachGoalDraft = {
   time: string;
   endTime: string;
   repeat: RepeatConfig;
+  daysOfWeek: Weekday[];
   endDate: string;
-  category: PlanCategory;
+  category: PlanCategory | null;
   timeSlot: TimeSlot;
   sessionMinutes: number;
   coachReason: string;
 };
 
+export type OpenAIChatMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  tool_calls?: unknown;
+  tool_call_id?: string;
+};
+
+export type CoachTurn = {
+  assistantText: string;
+  actions: CoachAction[];
+  nextHistory: OpenAIChatMessage[];
+};
+
+export function taskSnapshot(goal: Goal): CoachTaskSnapshot {
+  const stored = goal.daysOfWeek ?? [];
+  const days =
+    stored.length > 0 ? stored : goal.repeat?.unit === 'gun' && goal.repeat.interval === 1 ? [...WEEKDAYS] : [];
+  return {
+    id: goal.id,
+    title: goal.title,
+    scheduled_time: goal.time,
+    days_of_week: days,
+    duration_minutes: goal.sessionMinutes > 0 ? goal.sessionMinutes : 30,
+  };
+}
+
+export function buildCoachSystemPrompt(tasks: CoachTaskSnapshot[]): string {
+  return [
+    COACH_VOICE,
+    `Kullanıcının anasayfasında şu an şu görevler var: ${JSON.stringify(tasks)}. Eğer kullanıcı bir görevi değiştirmek veya silmek isterse, bu listedeki 'id' değerini kullanarak işlem yap.`,
+  ].join(' ');
+}
+
 function readApiKey(): string {
   const env = process.env as Record<string, string | undefined>;
   return env.EXPO_PUBLIC_OPENAI_API_KEY?.trim() ?? '';
-}
-
-function systemPrompt(intake: CoachIntake): string {
-  if (intake.kind === 'walk') {
-    return [
-      'Sen acımasız bir kondisyon ve yaşam koçusun. Kullanıcı bütün gün masa başında oturuyor veya çok yoruluyor olsa bile bahaneleri asla kabul etmiyorsun. Onun mesai saatlerine saygı duy ama belirttiği boşlukta kesinlikle kalp atış hızını (BPM) yükseltecek bir yürüyüş/kardiyo görevi ver. Akıllı saatteki halkaları doldurması gerektiğini hatırlat. Seçtiği mekana (dışarı veya cihaz) ve spor geçmişine uygun, reddedilemeyecek, net bir görev oluştur.',
-      'Yalnızca JSON döndür. Şema:',
-      '{',
-      '  "coach_summary": "Kullanıcının hamlığına veya üşengeçlik bahanesine koç ağzından çok sert, kan akışını hızlandıracak motive edici 2 cümlelik değerlendirme.",',
-      '  "assigned_style": "Yürüyüşün tarzı",',
-      '  "tasks": [',
-      '    {',
-      '      "title": "Görev başlığı",',
-      '      "scheduled_time": "HH:MM",',
-      '      "duration_minutes": 25,',
-      '      "coach_note": "Bu yürüyüşe özel acımasız not",',
-      '      "day_type": "everyday"',
-      '    }',
-      '  ]',
-      '}',
-      'Kurallar: tasks içinde 1 yürüyüş görevi olsun. scheduled_time mesaiyle çakışmasın, odak penceresine otursun. duration_minutes 15 ile 40 arasında tam sayı olsun. day_type "everyday" olsun. coach_note bildirimde okunacak kadar kısa, tek cümle olsun.',
-    ].join('\n');
-  }
-
-  return [
-    `Sen tavizsiz, sert ama kullanıcının mesai saatlerine ve fiziksel yorgunluğuna saygı duyan bir yaşam koçusun. Kullanıcının seçtiği kategoriye (${intake.selectedCategory}) özel, onun mesai saatleriyle çakışmayan, belirttiği odak penceresine uygun çok spesifik ve reddedilemeyecek görevler oluştur. Kullanıcı kaynak belirtmediyse, ona dünyaca kabul görmüş, kategorisine uygun popüler bir kaynak/kitap/egzersiz ata.`,
-    'Yalnızca JSON döndür. Şema:',
-    '{',
-    '  "coach_summary": "Kullanıcının mesaisine, engeline ve hedefine göre koç ağzından sert, motive edici 2 cümlelik fırça/değerlendirme.",',
-    '  "assigned_resource": "Eğer kullanıcı kaynak belirtmediyse senin atadığın kaynak. Belirttiyse kullanıcının kaynağı.",',
-    '  "tasks": [',
-    '    {',
-    '      "title": "Görev başlığı",',
-    '      "scheduled_time": "HH:MM",',
-    '      "duration_minutes": 20,',
-    '      "coach_note": "Bu göreve özel acımasız not",',
-    '      "day_type": "everyday"',
-    '    }',
-    '  ]',
-    '}',
-    'Kurallar: tasks içinde 3 görev olsun. scheduled_time kullanıcının boş saatine denk gelsin. duration_minutes 10 ile 45 arasında tam sayı olsun. day_type her görevde "everyday" olsun. coach_note bildirimde okunacak kadar kısa, tek cümle olsun.',
-  ].join('\n');
-}
-
-function userPayload(intake: CoachIntake): Record<string, unknown> {
-  const hours = {
-    kind: intake.hoursKind,
-    start: intake.startTime,
-    end: intake.endTime,
-  };
-  if (intake.kind === 'walk') {
-    return {
-      selectedCategory: intake.selectedCategory,
-      place: intake.place,
-      fitness: intake.fitness,
-      hours,
-      focusWindow: intake.focusWindow,
-      blocker: intake.blocker,
-    };
-  }
-  return {
-    selectedCategory: intake.selectedCategory,
-    resource: intake.resourceName,
-    schedule: intake.scheduleLabel,
-    hours,
-    focusWindow: intake.focusWindow,
-    blocker: intake.blocker,
-  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -144,67 +112,90 @@ function parseClock(value: unknown): string | null {
   return `${padDatePart(hour)}:${padDatePart(minute)}`;
 }
 
-function parseTasks(raw: unknown, bounds: { min: number; max: number }): CoachAiTask[] {
-  if (!Array.isArray(raw) || raw.length === 0) {
-    throw new Error('Koçun planı eksik geldi.');
-  }
-  return raw.slice(0, 5).map((item) => {
-    if (!isRecord(item)) throw new Error('Koçun görev listesi bozuk.');
-    const title = typeof item.title === 'string' ? item.title.trim() : '';
-    const scheduled = parseClock(item.scheduled_time);
-    const note = typeof item.coach_note === 'string' ? item.coach_note.trim() : '';
-    const minutes = Number(item.duration_minutes);
-    if (!title || !scheduled || !note || !Number.isFinite(minutes)) {
-      throw new Error('Koçun görevlerinden biri eksik.');
-    }
-    return {
-      title,
-      scheduled_time: scheduled,
-      duration_minutes: Math.min(bounds.max, Math.max(bounds.min, Math.round(minutes))),
-      coach_note: note,
-      day_type: 'everyday',
-    };
+function conversationHistory(history: OpenAIChatMessage[]): OpenAIChatMessage[] {
+  return history.flatMap((message) => {
+    if (message.role !== 'user' && message.role !== 'assistant') return [];
+    if (typeof message.content !== 'string' || !message.content.trim()) return [];
+    return [{ role: message.role, content: message.content.trim() }];
   });
 }
 
-export function parseCoachPlan(raw: unknown, kind: CoachPlanKind = 'default'): CoachAiPlan {
-  if (!isRecord(raw)) {
-    throw new Error('Koç geçerli bir plan döndürmedi.');
+function parseActions(raw: unknown, knownIds: Set<string>): CoachAction[] {
+  if (!Array.isArray(raw)) return [];
+  const actions: CoachAction[] = [];
+
+  for (const item of raw) {
+    if (!isRecord(item)) continue;
+    const type = item.type;
+    if (type !== 'create' && type !== 'update' && type !== 'delete') continue;
+
+    const title = typeof item.title === 'string' ? item.title.trim() : '';
+    const target =
+      typeof item.target_task_id === 'string' && item.target_task_id.trim()
+        ? item.target_task_id.trim()
+        : null;
+
+    if (type === 'delete') {
+      if (!target || !knownIds.has(target)) continue;
+      actions.push({
+        type,
+        target_task_id: target,
+        title,
+        scheduled_time: '',
+        days_of_week: [],
+        duration_minutes: 0,
+      });
+      continue;
+    }
+
+    const scheduled = parseClock(item.scheduled_time);
+    const days = normalizeDaysOfWeek(item.days_of_week);
+    const duration = Number(item.duration_minutes ?? item.duration);
+    if (!title || !scheduled || !days || !Number.isFinite(duration)) continue;
+    if ((type === 'update' && (!target || !knownIds.has(target))) || (type === 'create' && target)) {
+      continue;
+    }
+
+    actions.push({
+      type,
+      target_task_id: type === 'update' ? target : null,
+      title,
+      scheduled_time: scheduled,
+      days_of_week: days,
+      duration_minutes: Math.min(60, Math.max(10, Math.round(duration))),
+    });
   }
 
-  const coachSummary = typeof raw.coach_summary === 'string' ? raw.coach_summary.trim() : '';
-  const tasks = parseTasks(raw.tasks, kind === 'walk' ? { min: 15, max: 40 } : { min: 10, max: 45 });
-  if (!coachSummary) throw new Error('Koçun planı eksik geldi.');
-
-  if (kind === 'walk') {
-    const assignedStyle = typeof raw.assigned_style === 'string' ? raw.assigned_style.trim() : '';
-    if (!assignedStyle) throw new Error('Koçun planı eksik geldi.');
-    return {
-      kind,
-      coach_summary: coachSummary,
-      assigned_resource: '',
-      assigned_style: assignedStyle,
-      tasks,
-    };
-  }
-
-  const assignedResource =
-    typeof raw.assigned_resource === 'string' ? raw.assigned_resource.trim() : '';
-  if (!assignedResource) throw new Error('Koçun planı eksik geldi.');
-
-  return {
-    kind,
-    coach_summary: coachSummary,
-    assigned_resource: assignedResource,
-    assigned_style: '',
-    tasks,
-  };
+  return actions;
 }
 
-export async function requestCoachPlan(
-  intake: CoachIntake,
+function parseCoachPayload(
+  content: string,
+  knownIds: Set<string>,
+): { assistantText: string; actions: CoachAction[] } | null {
+  const trimmed = content.trim();
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(trimmed);
+  const source = fenced?.[1] ?? trimmed;
+  const start = source.indexOf('{');
+  const end = source.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) return null;
+
+  const message = typeof parsed.coach_message === 'string' ? parsed.coach_message.trim() : '';
+  return { assistantText: message, actions: parseActions(parsed.actions, knownIds) };
+}
+
+async function completeChat(
+  messages: OpenAIChatMessage[],
   signal?: AbortSignal,
-): Promise<CoachAiPlan> {
+): Promise<string> {
   const apiKey = readApiKey();
   if (!apiKey) {
     throw new Error('OpenAI anahtarı yok. .env dosyasına EXPO_PUBLIC_OPENAI_API_KEY ekle.');
@@ -221,15 +212,9 @@ export async function requestCoachPlan(
       },
       body: JSON.stringify({
         model: MODEL,
-        temperature: 0.7,
+        temperature: 0.4,
         response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: systemPrompt(intake) },
-          {
-            role: 'user',
-            content: JSON.stringify(userPayload(intake)),
-          },
-        ],
+        messages,
       }),
     });
   } catch (caught) {
@@ -239,7 +224,7 @@ export async function requestCoachPlan(
 
   const payload = (await response.json()) as {
     error?: { message?: string };
-    choices?: { message?: { content?: string } }[];
+    choices?: { message?: { content?: string | null } }[];
   };
 
   if (!response.ok) {
@@ -247,15 +232,34 @@ export async function requestCoachPlan(
   }
 
   const content = payload.choices?.[0]?.message?.content;
-  if (!content) throw new Error('Koç boş cevap verdi.');
+  if (!content?.trim()) throw new Error('Koç boş cevap verdi.');
+  return content;
+}
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    throw new Error('Koçun cevabı okunamadı.');
-  }
-  return parseCoachPlan(parsed, intake.kind);
+export async function requestCoachTurn(
+  history: OpenAIChatMessage[],
+  userText: string,
+  tasks: CoachTaskSnapshot[],
+  signal?: AbortSignal,
+): Promise<CoachTurn> {
+  const prior = conversationHistory(history);
+  const userMessage: OpenAIChatMessage = { role: 'user', content: userText };
+  const knownIds = new Set(tasks.map((task) => task.id));
+
+  const content = await completeChat(
+    [{ role: 'system', content: buildCoachSystemPrompt(tasks) }, ...prior, userMessage],
+    signal,
+  );
+
+  const parsed = parseCoachPayload(content, knownIds);
+  const assistantText = parsed?.assistantText || 'Konuş. Bahaneyi net yaz.';
+  const assistantMessage: OpenAIChatMessage = { role: 'assistant', content: assistantText };
+
+  return {
+    assistantText,
+    actions: parsed?.actions ?? [],
+    nextHistory: [...prior, userMessage, assistantMessage],
+  };
 }
 
 function todayDisplayDate(): string {
@@ -270,19 +274,32 @@ function slotForTime(time: string): TimeSlot {
   return 'aksam';
 }
 
-export function goalsFromCoachPlan(category: PlanCategory, plan: CoachAiPlan): AiCoachGoalDraft[] {
-  return plan.tasks.map((task) => ({
+function inferCategory(text: string): PlanCategory | null {
+  const value = text.toLocaleLowerCase('tr-TR');
+  if (/(kitap|oku|sayfa)/.test(value)) return 'kitap';
+  if (/(yürü|yuruyus|koşu|kardiyo|band)/.test(value)) return 'yuruyus';
+  if (/(antrenman|vücut|spor|ağırlık)/.test(value)) return 'vucut';
+  if (/(müzik|enstrüman|piyano|gitar)/.test(value)) return 'muzik';
+  if (/(dil|ingilizce|kelime)/.test(value)) return 'dil';
+  if (/(ders|akademik|sınav|ödev)/.test(value)) return 'akademik';
+  return null;
+}
+
+export function goalFromCoachAction(action: CoachAction): CoachGoalDraft {
+  const note = `${action.title}. ${action.days_of_week.join(', ')} · ${action.scheduled_time}.`;
+  return {
     type: 'coach',
-    title: task.title,
-    description: task.coach_note,
+    title: action.title,
+    description: note,
     date: todayDisplayDate(),
-    time: task.scheduled_time,
-    endTime: addMinutesToClock(task.scheduled_time, task.duration_minutes),
+    time: action.scheduled_time,
+    endTime: addMinutesToClock(action.scheduled_time, action.duration_minutes),
     repeat: DAILY,
+    daysOfWeek: action.days_of_week,
     endDate: '',
-    category,
-    timeSlot: slotForTime(task.scheduled_time),
-    sessionMinutes: task.duration_minutes,
-    coachReason: plan.coach_summary,
-  }));
+    category: inferCategory(action.title),
+    timeSlot: slotForTime(action.scheduled_time),
+    sessionMinutes: action.duration_minutes,
+    coachReason: note,
+  };
 }

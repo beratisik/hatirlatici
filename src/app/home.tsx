@@ -6,12 +6,13 @@ import { StatusBar } from 'expo-status-bar';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import {
-  formatRepeatSummary,
+  formatGoalCadence,
   formatTimeRange,
   getConfrontationMessage,
   GOAL_TYPE_COLORS,
   isCompletedToday,
   isHandledToday,
+  isRepeating,
   isReminderDoneToday,
   isStreakAtRisk,
   isTimeEditLocked,
@@ -33,7 +34,7 @@ import {
   GoalMenuButton,
   GoalMenuSheet,
 } from '@/components/goal-menu';
-import { canCompleteReminder, describeNextReminder, goalsOnDay, startOfToday } from '@/lib/schedule';
+import { canCompleteReminder, describeNextReminder, goalOccursOn, goalsOnDay, startOfToday } from '@/lib/schedule';
 import { formatLiters, nextSlotAfter } from '@/lib/water';
 
 export default function HomeScreen() {
@@ -52,6 +53,9 @@ export default function HomeScreen() {
   const [calendarVisible, setCalendarVisible] = useState(false);
 
   const activeGoals = goals.filter((goal) => !goal.archived);
+  const todayGoals = activeGoals.filter(
+    (goal) => !goal.daysOfWeek?.length || goalOccursOn(goal, startOfToday()),
+  );
   const coachCount = activeGoals.filter((goal) => goal.type === 'coach').length;
   const dayGoals = useMemo(() => {
     return goalsOnDay(activeGoals, selectedDay).slice().sort((a, b) => {
@@ -77,7 +81,7 @@ export default function HomeScreen() {
       id: 'coach',
       icon: '🔥',
       label: 'Koç’tan Plan Al',
-      hint: 'Sorularla kişiselleşen hedef. Puan ve seri burada işler.',
+      hint: 'Koçla yazış. Bahanen bitince görev kilitlenir.',
       accent: GOAL_TYPE_COLORS.coach,
       onPress: () => router.push('/coach-plan'),
     },
@@ -168,10 +172,10 @@ export default function HomeScreen() {
         )}
 
         <FlatList
-          data={activeGoals}
+          data={todayGoals}
           keyExtractor={(item) => item.id}
           contentContainerStyle={
-            activeGoals.length === 0 ? styles.emptyListContent : styles.listContent
+            todayGoals.length === 0 ? styles.emptyListContent : styles.listContent
           }
           renderItem={({ item }) =>
             item.type === 'coach' ? (
@@ -192,12 +196,18 @@ export default function HomeScreen() {
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               <Text style={styles.emptyTitle}>
-                {archivedCount > 0 ? 'AKTİF KAYDIN YOK' : 'HENÜZ KAYDIN YOK!'}
+                {activeGoals.length > 0
+                  ? 'BUGÜN İŞİN YOK'
+                  : archivedCount > 0
+                    ? 'AKTİF KAYDIN YOK'
+                    : 'HENÜZ KAYDIN YOK!'}
               </Text>
               <Text style={styles.emptySubtitle}>
-                {archivedCount > 0
-                  ? 'Duraklattığın veya bitirdiğin kayıtlar Arşiv’de. Serin silinmedi.'
-                  : 'Soldan menüyü aç: anımsatıcı ekle ya da koçtan bir plan al.'}
+                {activeGoals.length > 0
+                  ? 'Bu gün için planlı görev yok. Diğer günler takvimde duruyor.'
+                  : archivedCount > 0
+                    ? 'Duraklattığın veya bitirdiğin kayıtlar Arşiv’de. Serin silinmedi.'
+                    : 'Soldan menüyü aç: anımsatıcı ekle ya da koçla yazış.'}
               </Text>
               <TouchableOpacity
                 style={styles.emptyButton}
@@ -249,7 +259,7 @@ export default function HomeScreen() {
                         {[
                           goal.type === 'coach' ? 'Koç' : 'Anımsatıcı',
                           formatTimeRange(goal.time, goal.endTime),
-                          formatRepeatSummary(goal.repeat),
+                          formatGoalCadence(goal),
                         ]
                           .filter(Boolean)
                           .join(' · ')}
@@ -427,7 +437,7 @@ function ReminderCard({
 
       <View style={styles.cardFooter}>
         <View style={styles.badge}>
-          <Text style={styles.badgeText}>{formatRepeatSummary(goal.repeat)}</Text>
+          <Text style={styles.badgeText}>{formatGoalCadence(goal)}</Text>
         </View>
         {!!goal.endDate && (
           <View style={styles.badge}>
@@ -543,14 +553,14 @@ function CoachCard({
 
         <View style={styles.cardFooter}>
           <View style={styles.badge}>
-            <Text style={styles.badgeText}>{formatRepeatSummary(goal.repeat)}</Text>
+            <Text style={styles.badgeText}>{formatGoalCadence(goal)}</Text>
           </View>
           {!!goal.endDate && (
             <View style={styles.badge}>
               <Text style={styles.badgeText}>Bitiş {goal.endDate}</Text>
             </View>
           )}
-          {goal.repeat && goal.streak > 0 && (
+          {isRepeating(goal) && goal.streak > 0 && (
             <View style={styles.badge}>
               <Text style={styles.streakBadgeText}>🔥 {goal.streak} seri</Text>
             </View>

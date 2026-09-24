@@ -58,6 +58,42 @@ export type RepeatConfig = {
   interval: number;
 };
 
+export const WEEKDAYS = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+] as const;
+
+export type Weekday = (typeof WEEKDAYS)[number];
+
+const WEEKDAY_LABEL: Record<Weekday, string> = {
+  Sunday: 'Paz',
+  Monday: 'Pzt',
+  Tuesday: 'Sal',
+  Wednesday: 'Çar',
+  Thursday: 'Per',
+  Friday: 'Cum',
+  Saturday: 'Cmt',
+};
+
+export function isWeekday(value: unknown): value is Weekday {
+  return typeof value === 'string' && (WEEKDAYS as readonly string[]).includes(value);
+}
+
+export function normalizeDaysOfWeek(value: unknown): Weekday[] | null {
+  if (!Array.isArray(value)) return null;
+  const days = WEEKDAYS.filter((day) => value.includes(day));
+  return days.length > 0 ? [...days] : null;
+}
+
+export function weekdayOf(day: Date): Weekday {
+  return WEEKDAYS[day.getDay()];
+}
+
 const UNIT_LOCATIVE: Record<RepeatUnit, string> = {
   saat: 'saatte',
   gun: 'günde',
@@ -109,6 +145,7 @@ export type Goal = {
   time: string;
   endTime: string;
   repeat: RepeatConfig | null;
+  daysOfWeek: Weekday[] | null;
   endDate: string;
   lastCompletedDate: string | null;
   lastOutcome: GoalOutcome | null;
@@ -136,6 +173,40 @@ export type CompleteResult = {
 export function formatRepeatSummary(repeat: RepeatConfig | null): string {
   if (!repeat) return 'Tekrar yok';
   return `Her ${repeat.interval} ${UNIT_LOCATIVE[repeat.unit]} bir tekrarla`;
+}
+
+export function formatGoalCadence(goal: Pick<Goal, 'repeat' | 'daysOfWeek'>): string {
+  const days = goal.daysOfWeek;
+  if (days && days.length > 0) {
+    if (days.length === WEEKDAYS.length) return 'Her gün';
+    return days.map((day) => WEEKDAY_LABEL[day]).join(', ');
+  }
+  return formatRepeatSummary(goal.repeat);
+}
+
+function previousScheduledIso(days: Weekday[]): string | null {
+  const start = startOfToday();
+  for (let offset = 1; offset <= WEEKDAYS.length; offset += 1) {
+    const day = new Date(start);
+    day.setDate(day.getDate() - offset);
+    if (days.includes(WEEKDAYS[day.getDay()])) return toIso(day);
+  }
+  return null;
+}
+
+function keepsStreak(goal: Goal): boolean {
+  const last = goal.lastCompletedDate;
+  if (!last) return false;
+  if (last === todayIso()) return true;
+  if (goal.daysOfWeek && goal.daysOfWeek.length > 0) {
+    return last === previousScheduledIso(goal.daysOfWeek);
+  }
+  return last === yesterdayIso();
+}
+
+export function isScheduledToday(goal: Goal): boolean {
+  if (!goal.daysOfWeek || goal.daysOfWeek.length === 0) return true;
+  return goal.daysOfWeek.includes(WEEKDAYS[startOfToday().getDay()]);
 }
 
 export function padDatePart(value: number) {
@@ -221,7 +292,7 @@ export function parseGoalDateParts(
 }
 
 export function isRepeating(goal: Goal): boolean {
-  return goal.repeat != null;
+  return goal.repeat != null || (goal.daysOfWeek?.length ?? 0) > 0;
 }
 
 export function isCoachGoal(goal: Goal): boolean {
@@ -245,7 +316,8 @@ export function isStreakAtRisk(goal: Goal): boolean {
   return (
     goal.type === 'coach' &&
     !goal.archived &&
-    goal.repeat != null &&
+    isRepeating(goal) &&
+    isScheduledToday(goal) &&
     goal.streak > 0 &&
     goal.lastCompletedDate !== todayIso()
   );
@@ -433,15 +505,31 @@ type NewGoalInput = Omit<
   | 'sessionMinutes'
   | 'coachReason'
   | 'endTime'
+  | 'daysOfWeek'
 > & {
   category?: PlanCategory | null;
   timeSlot?: TimeSlot | null;
   sessionMinutes?: number;
   coachReason?: string;
   endTime?: string;
+  daysOfWeek?: Weekday[] | null;
 };
 
-type GoalPatch = Partial<Pick<Goal, 'title' | 'time' | 'endDate' | 'endTime' | 'timeSlot'>>;
+type GoalPatch = Partial<
+  Pick<
+    Goal,
+    | 'title'
+    | 'description'
+    | 'time'
+    | 'endDate'
+    | 'endTime'
+    | 'timeSlot'
+    | 'sessionMinutes'
+    | 'daysOfWeek'
+    | 'coachReason'
+    | 'category'
+  >
+>;
 
 type GoalContextValue = {
   isReady: boolean;
@@ -507,6 +595,7 @@ function normalizeGoals(raw: unknown): Goal[] {
         : isPlanCategory(item.category)
           ? ('coach' as const)
           : ('reminder' as const),
+      daysOfWeek: normalizeDaysOfWeek(item.daysOfWeek),
       endDate: typeof item.endDate === 'string' ? item.endDate : '',
       endTime:
         typeof item.endTime === 'string' && item.endTime
@@ -550,21 +639,18 @@ function isTimeSlot(value: unknown): value is TimeSlot {
 }
 
 function resetBrokenStreaks(goals: Goal[]): Goal[] {
-  const today = todayIso();
-  const yesterday = yesterdayIso();
   let changed = false;
   const next = goals.map((goal) => {
     if (
       goal.type !== 'coach' ||
       goal.archived ||
       goal.archiveReason === 'paused' ||
-      !goal.repeat ||
+      !isRepeating(goal) ||
       goal.streak <= 0
     ) {
       return goal;
     }
-    const last = goal.lastCompletedDate;
-    if (!last || last === today || last === yesterday) return goal;
+    if (keepsStreak(goal)) return goal;
     changed = true;
     return { ...goal, streak: 0 };
   });
@@ -719,6 +805,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       pagesRead: 0,
       startedAt: todayIso(),
       coachReason: goal.coachReason ?? '',
+      daysOfWeek: normalizeDaysOfWeek(goal.daysOfWeek),
     };
     setGoals((prev) => maintainGoals([...prev, created]));
     void scheduleGoalAlarm(created);
@@ -728,8 +815,12 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     const current = goalsRef.current.find((item) => item.id === id);
     if (!current) return;
     const next = { ...current, ...patch };
-    if (patch.time && !patch.endTime && current.sessionMinutes > 0) {
-      next.endTime = addMinutesToClock(next.time, current.sessionMinutes);
+    if (patch.daysOfWeek !== undefined) {
+      next.daysOfWeek = normalizeDaysOfWeek(patch.daysOfWeek);
+    }
+    const minutes = patch.sessionMinutes ?? current.sessionMinutes;
+    if ((patch.time || patch.sessionMinutes) && !patch.endTime && next.time && minutes > 0) {
+      next.endTime = addMinutesToClock(next.time, minutes);
     }
     setGoals((prev) => maintainGoals(prev.map((item) => (item.id === id ? next : item))));
     void scheduleGoalAlarm(next);
@@ -754,20 +845,21 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     if (!goal || goal.archived) return empty;
     // Puan ve seri yalnızca koç modülüne ait; anımsatıcılar tamamlanmaz.
     if (goal.type !== 'coach') return empty;
-    if (goal.repeat && goal.lastCompletedDate === day) return empty;
+    if (isRepeating(goal) && goal.lastCompletedDate === day) return empty;
+    if (goal.daysOfWeek && goal.daysOfWeek.length > 0 && !isScheduledToday(goal)) return empty;
 
     let nextStreak = goal.streak;
-    if (goal.repeat) {
+    if (isRepeating(goal)) {
       if (outcome === 'missed') {
         nextStreak = 0;
-      } else if (goal.lastCompletedDate === yesterdayIso()) {
-        nextStreak = goal.streak + 1;
+      } else if (keepsStreak({ ...goal, lastCompletedDate: goal.lastCompletedDate })) {
+        nextStreak = goal.lastCompletedDate === day ? goal.streak : goal.streak + 1;
       } else {
         nextStreak = 1;
       }
     }
 
-    const bonus = goal.repeat && outcome === 'onTime' && nextStreak === STREAK_BONUS_AT;
+    const bonus = isRepeating(goal) && outcome === 'onTime' && nextStreak === STREAK_BONUS_AT;
     const points = bonus ? STREAK_BONUS_POINTS : OUTCOME_POINTS[outcome];
     const counted = outcome !== 'missed';
     const extraPages =
@@ -783,7 +875,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
           pointsEarned: item.pointsEarned + points,
           pagesRead: item.pagesRead + extraPages,
         };
-        if (item.repeat) {
+        if (isRepeating(item)) {
           return {
             ...item,
             ...stats,
@@ -797,7 +889,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     );
     setScore((prev) => prev + points);
 
-    if (!goal.repeat) {
+    if (!isRepeating(goal)) {
       void cancelGoalAlarm(id);
     }
 

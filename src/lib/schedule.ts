@@ -4,6 +4,7 @@ import {
   parseGoalTime,
   startOfToday,
   todayIso,
+  weekdayOf,
   type Goal,
 } from '@/context/GoalContext';
 
@@ -96,6 +97,11 @@ export function goalOccursOn(goal: Goal, day: Date): boolean {
   if (end && target.getTime() > end.getTime()) return false;
 
   const origin = goalOrigin(goal);
+
+  if (goal.daysOfWeek && goal.daysOfWeek.length > 0) {
+    if (target.getTime() < origin.getTime()) return false;
+    return goal.daysOfWeek.includes(weekdayOf(target));
+  }
 
   if (!goal.repeat) {
     return isSameDay(origin, target);
