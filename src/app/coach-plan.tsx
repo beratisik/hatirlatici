@@ -187,6 +187,7 @@ export default function CoachPlanScreen() {
   const router = useRouter();
   const { addGoal, updateGoal, deleteGoal, goals } = useGoals();
   const listRef = useRef<FlatList<ChatBubble>>(null);
+  const inputRef = useRef<TextInput>(null);
   const abortRef = useRef<AbortController | null>(null);
   const historyRef = useRef<OpenAIChatMessage[]>([]);
   const sessionRef = useRef(0);
@@ -347,6 +348,7 @@ export default function CoachPlanScreen() {
     setBubbles((prev) => [...prev, userBubble]);
     setDraft('');
     setSending(true);
+    requestAnimationFrame(() => inputRef.current?.focus());
     scrollToEnd();
 
     const session = sessionRef.current;
@@ -402,7 +404,10 @@ export default function CoachPlanScreen() {
       setBubbles((prev) => [...prev, { id: newId(), kind: 'coach', text: message }]);
       scrollToEnd();
     } finally {
-      if (!controller.signal.aborted && session === sessionRef.current) setSending(false);
+      if (!controller.signal.aborted && session === sessionRef.current) {
+        setSending(false);
+        requestAnimationFrame(() => inputRef.current?.focus());
+      }
     }
   }
 
@@ -445,6 +450,8 @@ export default function CoachPlanScreen() {
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.list}
           onContentSizeChange={scrollToEnd}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           renderItem={({ item }) => <Bubble item={item} />}
           ListFooterComponent={
             sending ? (
@@ -479,15 +486,15 @@ export default function CoachPlanScreen() {
 
         <View style={styles.composer}>
           <TextInput
+            ref={inputRef}
             value={draft}
             onChangeText={setDraft}
             placeholder="Bahaneni yaz..."
             placeholderTextColor="#6B6B6B"
             style={styles.input}
             multiline
-            editable={!sending}
-            onSubmitEditing={() => void handleSend()}
             blurOnSubmit={false}
+            onSubmitEditing={() => void handleSend()}
           />
           <TouchableOpacity
             style={[styles.send, (!draft.trim() || sending) && styles.sendDisabled]}

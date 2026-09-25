@@ -133,8 +133,8 @@ function ArchivedGoalCard({
       </View>
 
       {finished ? (
-        <TouchableOpacity style={styles.restoreButton} activeOpacity={0.85} onPress={onReport}>
-          <Text style={styles.restoreButtonLabel}>KARNE</Text>
+        <TouchableOpacity style={styles.reportButton} activeOpacity={0.85} onPress={onReport}>
+          <Text style={styles.reportButtonLabel}>KARNE</Text>
         </TouchableOpacity>
       ) : (
         <TouchableOpacity style={styles.restoreButton} activeOpacity={0.85} onPress={onRestore}>
@@ -269,16 +269,30 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
-  restoreButton: {
+  reportButton: {
     marginTop: 8,
     backgroundColor: '#C1121F',
-    borderWidth: 0,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  reportButtonLabel: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+  restoreButton: {
+    marginTop: 8,
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: '#C1121F',
     borderRadius: 10,
     paddingVertical: 12,
     alignItems: 'center',
   },
   restoreButtonLabel: {
-    color: '#FFFFFF',
+    color: '#C1121F',
     fontSize: 12,
     fontWeight: '800',
     letterSpacing: 0.8,

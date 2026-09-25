@@ -39,6 +39,9 @@ export function PasswordField({
         secureTextEntry={!visible}
         autoCapitalize="none"
         autoCorrect={false}
+        autoComplete="password"
+        textContentType="password"
+        keyboardType={Platform.OS === 'android' && visible ? 'visible-password' : 'default'}
       />
       <TouchableOpacity
         style={styles.toggle}

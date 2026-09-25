@@ -7,8 +7,10 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import {
   formatGoalCadence,
+  formatScoreLadderRange,
   formatTimeRange,
   getConfrontationMessage,
+  getRankName,
   GOAL_TYPE_COLORS,
   isCompletedToday,
   isHandledToday,
@@ -17,13 +19,16 @@ import {
   isStreakAtRisk,
   isTimeEditLocked,
   OUTCOME_POINTS,
+  SCORE_LADDER,
   useGoals,
+  useUser,
   useWater,
   type Goal,
   type GoalOutcome,
   type WaterSummary,
 } from '@/context/GoalContext';
 import { AppDrawer, DrawerToggleButton, type DrawerAction } from '@/components/app-drawer';
+import { CycleMark } from '@/components/cycle-mark';
 import { ConfrontationModal } from '@/components/confrontation-modal';
 import { formatDayHeading, HomeCalendar } from '@/components/home-calendar';
 import {
@@ -43,6 +48,7 @@ export default function HomeScreen() {
   const { goals, completeGoal, completeReminder, archiveGoal, pauseGoal, finishGoal, deleteGoal, score, profile } =
     useGoals();
   const { water, logWater } = useWater();
+  const { user } = useUser();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [menuGoal, setMenuGoal] = useState<Goal | null>(null);
   const [lockWarning, setLockWarning] = useState(false);
@@ -51,6 +57,8 @@ export default function HomeScreen() {
   );
   const [selectedDay, setSelectedDay] = useState(() => startOfToday());
   const [calendarVisible, setCalendarVisible] = useState(false);
+  const [rankVisible, setRankVisible] = useState(false);
+  const rankName = getRankName(score);
 
   const activeGoals = goals.filter((goal) => !goal.archived);
   const todayGoals = activeGoals.filter(
@@ -85,6 +93,18 @@ export default function HomeScreen() {
       accent: GOAL_TYPE_COLORS.coach,
       onPress: () => router.push('/coach-plan'),
     },
+    ...(user?.gender === 'kadin'
+      ? [
+          {
+            id: 'cycle',
+            icon: <CycleMark size={20} color="#C1121F" />,
+            label: 'Döngü Takibi',
+            hint: 'Adet tahmini, kalan gün ve gecikme.',
+            accent: '#C1121F',
+            onPress: () => router.push('/cycle'),
+          } satisfies DrawerAction,
+        ]
+      : []),
   ];
 
   function handleOpenProfile() {
@@ -155,20 +175,28 @@ export default function HomeScreen() {
           </View>
 
           <Text style={styles.headerTitle}>HEDEFLERİM</Text>
-          <Text style={styles.headerMeta}>
-            {activeGoals.length > 0 ? `${activeGoals.length} aktif kayıt · ` : ''}
+          {activeGoals.length > 0 ? (
+            <Text style={styles.headerMeta}>{activeGoals.length} aktif kayıt</Text>
+          ) : null}
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => setRankVisible(true)}
+            accessibilityRole="button"
+            accessibilityLabel={`${rankName}, ${score} puan. Rütbe listesini aç.`}>
             <Text style={[styles.headerScore, score < 0 && styles.headerScoreNegative]}>
-              {score} puan
+              [{rankName}] • {score} Puan
             </Text>
-          </Text>
+          </TouchableOpacity>
         </View>
 
         <WaterStrip water={water} onOpen={handleOpenWater} onDrink={logWater} />
 
         {coachCount > 0 && (
-          <Text style={styles.swipeHint}>
-            Koç kartlarında: ← Yapmadım / Arşivle · Yaptım / Geç yaptım →
-          </Text>
+          <View style={styles.swipeBanner}>
+            <Text style={styles.swipeHint}>
+              Koç kartlarında: ← Yapmadım / Arşivle · Yaptım / Geç yaptım →
+            </Text>
+          </View>
         )}
 
         <FlatList
@@ -268,6 +296,60 @@ export default function HomeScreen() {
                   ))
                 )}
               </ScrollView>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal
+          visible={rankVisible}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setRankVisible(false)}>
+          <View style={styles.rankOverlay}>
+            <TouchableOpacity
+              style={styles.rankBackdrop}
+              activeOpacity={1}
+              onPress={() => setRankVisible(false)}
+            />
+            <View style={styles.rankSheet}>
+              <View style={styles.rankSheetHeader}>
+                <Text style={styles.rankSheetTitle}>RÜTBELER</Text>
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  accessibilityLabel="Kapat"
+                  onPress={() => setRankVisible(false)}>
+                  <Text style={styles.rankClose}>✕</Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView
+                style={styles.rankList}
+                contentContainerStyle={styles.rankListContent}
+                showsVerticalScrollIndicator={false}>
+                {SCORE_LADDER.map((rank) => {
+                  const current = rank.name === rankName;
+                  return (
+                    <View
+                      key={rank.name}
+                      style={[styles.rankRow, current && styles.rankRowCurrent]}>
+                      <View style={styles.rankRowCopy}>
+                        <Text style={[styles.rankRowName, current && styles.rankRowNameCurrent]}>
+                          {rank.name}
+                        </Text>
+                        <Text style={[styles.rankRowRange, current && styles.rankRowRangeCurrent]}>
+                          {formatScoreLadderRange(rank)}
+                        </Text>
+                      </View>
+                      {current ? <Text style={styles.rankHere}>Şu an buradasın</Text> : null}
+                    </View>
+                  );
+                })}
+              </ScrollView>
+              <TouchableOpacity
+                style={styles.rankDismiss}
+                activeOpacity={0.85}
+                onPress={() => setRankVisible(false)}>
+                <Text style={styles.rankDismissLabel}>Kapat</Text>
+              </TouchableOpacity>
             </View>
           </View>
         </Modal>
@@ -566,15 +648,6 @@ function CoachCard({
             </View>
           )}
         </View>
-
-        {!handledToday && (
-          <TouchableOpacity
-            style={styles.completeButton}
-            activeOpacity={0.85}
-            onPress={() => onOutcome(goal.id, 'onTime')}>
-            <Text style={styles.completeButtonLabel}>YAPTIM (+{OUTCOME_POINTS.onTime})</Text>
-          </TouchableOpacity>
-        )}
       </View>
     </Swipeable>
   );
@@ -628,7 +701,9 @@ const styles = StyleSheet.create({
   },
   headerScore: {
     color: '#3DDC84',
+    fontSize: 15,
     fontWeight: '800',
+    marginTop: 4,
   },
   headerScoreNegative: {
     color: '#FF5C5C',
@@ -663,13 +738,20 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '800',
   },
+  swipeBanner: {
+    marginHorizontal: 20,
+    marginBottom: 10,
+    backgroundColor: '#1C1C1E',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
   swipeHint: {
-    color: '#5F5F5F',
+    color: '#A1A1A6',
     fontSize: 11,
     fontWeight: '500',
     textAlign: 'center',
-    paddingHorizontal: 20,
-    paddingBottom: 10,
+    lineHeight: 16,
   },
   waterSetup: {
     marginHorizontal: 20,
@@ -748,6 +830,102 @@ const styles = StyleSheet.create({
   },
   waterDrinkValue: {
     color: '#9FC4E0',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  rankOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  rankBackdrop: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: 'rgba(0,0,0,0.62)',
+  },
+  rankSheet: {
+    backgroundColor: '#0B0B0B',
+    borderTopWidth: 1,
+    borderColor: '#2A2A2A',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 28,
+    maxHeight: '82%',
+    gap: 12,
+  },
+  rankSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  rankSheetTitle: {
+    color: '#F2F2F2',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
+  rankClose: {
+    color: '#B5B5B5',
+    fontSize: 20,
+    fontWeight: '600',
+    paddingHorizontal: 6,
+  },
+  rankList: {
+    flexGrow: 0,
+  },
+  rankListContent: {
+    gap: 8,
+    paddingBottom: 4,
+  },
+  rankRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    backgroundColor: '#141414',
+    borderWidth: 1,
+    borderColor: '#2A2A2A',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  rankRowCurrent: {
+    borderColor: '#3DDC84',
+    backgroundColor: '#102016',
+  },
+  rankRowCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  rankRowName: {
+    color: '#E8E8E8',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  rankRowNameCurrent: {
+    color: '#3DDC84',
+  },
+  rankRowRange: {
+    color: '#8A8A8A',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  rankRowRangeCurrent: {
+    color: '#8FCBAA',
+  },
+  rankHere: {
+    color: '#3DDC84',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  rankDismiss: {
+    backgroundColor: '#141414',
+    borderWidth: 1,
+    borderColor: '#2A2A2A',
+    borderRadius: 12,
+    alignItems: 'center',
+    paddingVertical: 14,
+  },
+  rankDismissLabel: {
+    color: '#E4E4E4',
     fontSize: 14,
     fontWeight: '800',
   },
@@ -875,8 +1053,9 @@ const styles = StyleSheet.create({
     borderColor: '#262626',
     borderLeftWidth: 3,
     borderRadius: 14,
-    padding: 18,
-    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 6,
   },
   reminderCard: {
     borderLeftColor: GOAL_TYPE_COLORS.reminder,
@@ -885,7 +1064,7 @@ const styles = StyleSheet.create({
     borderLeftColor: GOAL_TYPE_COLORS.coach,
   },
   cardBodyHit: {
-    gap: 10,
+    gap: 6,
   },
   cardTopRow: {
     flexDirection: 'row',
@@ -991,19 +1170,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     lineHeight: 17,
-  },
-  completeButton: {
-    marginTop: 6,
-    backgroundColor: '#C1121F',
-    borderRadius: 10,
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  completeButtonLabel: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 1.2,
   },
   leftActions: {
     flexDirection: 'row',

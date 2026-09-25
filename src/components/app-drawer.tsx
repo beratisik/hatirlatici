@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export type DrawerAction = {
   id: string;
-  icon: string;
+  icon: ReactNode;
   label: string;
   hint: string;
   accent: string;
@@ -59,7 +59,11 @@ export function AppDrawer({
                   action.onPress();
                 }}>
                 <View style={[styles.actionIcon, { borderColor: action.accent }]}>
-                  <Text style={styles.actionIconGlyph}>{action.icon}</Text>
+                  {typeof action.icon === 'string' ? (
+                    <Text style={styles.actionIconGlyph}>{action.icon}</Text>
+                  ) : (
+                    action.icon
+                  )}
                 </View>
                 <View style={styles.actionText}>
                   <Text style={styles.actionLabel}>{action.label}</Text>

@@ -31,6 +31,7 @@ import {
   type WaterEntry,
   type WaterSettings,
 } from '@/lib/water';
+import { emailTaken, foldIdentity, identifierMatches, secretsMatch, usernameTaken } from '@/lib/password';
 
 const STORAGE_KEY = '@hatirlatici/state';
 
@@ -459,8 +460,41 @@ export function getRank(score: number): Rank {
   return current;
 }
 
+export type ScoreLadderRank = {
+  name: string;
+  min: number;
+  max: number | null;
+};
+
+export const SCORE_LADDER: ScoreLadderRank[] = [
+  { name: 'Başlangıç', min: 0, max: 29 },
+  { name: 'Çaylak', min: 30, max: 79 },
+  { name: 'Gönüllü', min: 80, max: 149 },
+  { name: 'Kararlı', min: 150, max: 299 },
+  { name: 'Disiplinli', min: 300, max: 499 },
+  { name: 'Sarsılmaz', min: 500, max: 799 },
+  { name: 'Profesyonel', min: 800, max: 1199 },
+  { name: 'Komando', min: 1200, max: 1799 },
+  { name: 'Kurmay', min: 1800, max: null },
+];
+
+export function getRankName(score: number): string {
+  let name = SCORE_LADDER[0].name;
+  for (const rank of SCORE_LADDER) {
+    if (score >= rank.min) name = rank.name;
+  }
+  return name;
+}
+
+export function formatScoreLadderRange(rank: ScoreLadderRank): string {
+  if (rank.max == null) return `${rank.min}+ Puan`;
+  return `${rank.min} - ${rank.max} Puan`;
+}
+
 export type User = {
   name: string;
+  surname: string;
+  username: string;
   email: string;
   password: string;
   avatarUri: string | null;
@@ -471,6 +505,7 @@ type PersistedState = {
   goals: Goal[];
   score: number;
   user: User | null;
+  accounts?: User[];
   isLoggedIn: boolean;
   profile: string | null;
   waterSettings: WaterSettings | null;
@@ -549,6 +584,8 @@ type GoalContextValue = {
 
   user: User | null;
   setUser: (user: User) => void;
+  registerAccount: (user: User) => 'ok' | 'email' | 'username';
+  authenticate: (identifier: string, password: string) => boolean;
   updatePassword: (currentPassword: string, newPassword: string) => boolean;
   updateAvatar: (uri: string) => void;
   login: () => void;
@@ -560,6 +597,7 @@ type GoalContextValue = {
   logWater: (ml: number) => void;
   undoLastWater: () => void;
   clearWaterPlan: () => void;
+  wipeAllData: () => Promise<void>;
 
   score: number;
 };
@@ -575,12 +613,30 @@ function normalizeUser(raw: unknown): User | null {
   const value = raw as Partial<User>;
   if (!value.name || !value.email || !value.password) return null;
   return {
-    name: value.name,
-    email: value.email,
+    name: value.name.trim(),
+    surname: typeof value.surname === 'string' ? value.surname.trim() : '',
+    username:
+      typeof value.username === 'string' && value.username.trim()
+        ? value.username.trim()
+        : value.email.split('@')[0]?.trim() || value.name.trim(),
+    email: value.email.trim(),
     password: value.password,
     avatarUri: typeof value.avatarUri === 'string' ? value.avatarUri : null,
     gender: isGender(value.gender) ? value.gender : null,
   };
+}
+
+function normalizeAccounts(raw: unknown, fallback: User | null): User[] {
+  const list = Array.isArray(raw)
+    ? raw.map(normalizeUser).filter((item): item is User => !!item)
+    : [];
+  const withFallback = list.length > 0 ? list : fallback ? [fallback] : [];
+  const unique: User[] = [];
+  for (const account of withFallback) {
+    if (emailTaken(unique, account.email) || usernameTaken(unique, account.username)) continue;
+    unique.push(account);
+  }
+  return unique;
 }
 
 function normalizeGoals(raw: unknown): Goal[] {
@@ -677,6 +733,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
   const [isReady, setIsReady] = useState(false);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [user, setUserState] = useState<User | null>(null);
+  const [accounts, setAccounts] = useState<User[]>([]);
   const [score, setScore] = useState(0);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [profile, setProfileState] = useState<string | null>(null);
@@ -685,7 +742,9 @@ export function GoalProvider({ children }: { children: ReactNode }) {
   const [dayStamp, setDayStamp] = useState(() => todayIso());
   const skipPersist = useRef(true);
   const goalsRef = useRef<Goal[]>([]);
+  const accountsRef = useRef<User[]>([]);
   goalsRef.current = goals;
+  accountsRef.current = accounts;
 
   useEffect(() => {
     let cancelled = false;
@@ -696,9 +755,12 @@ export function GoalProvider({ children }: { children: ReactNode }) {
         if (raw && !cancelled) {
           const parsed = JSON.parse(raw) as Partial<PersistedState>;
           const nextGoals = maintainGoals(normalizeGoals(parsed.goals));
+          const nextUser = normalizeUser(parsed.user);
+          const nextAccounts = normalizeAccounts(parsed.accounts, nextUser);
           setGoals(nextGoals);
           setScore(typeof parsed.score === 'number' ? parsed.score : 0);
-          setUserState(normalizeUser(parsed.user));
+          setAccounts(nextAccounts);
+          setUserState(nextUser);
           setIsLoggedIn(Boolean(parsed.isLoggedIn && parsed.user));
           setProfileState(typeof parsed.profile === 'string' ? parsed.profile : null);
           setWaterSettings(isWaterSettings(parsed.waterSettings) ? parsed.waterSettings : null);
@@ -726,6 +788,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       goals,
       score,
       user,
+      accounts,
       isLoggedIn,
       profile,
       waterSettings,
@@ -733,7 +796,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     };
 
     void AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  }, [goals, score, user, isLoggedIn, profile, waterSettings, waterDay, isReady]);
+  }, [goals, score, user, accounts, isLoggedIn, profile, waterSettings, waterDay, isReady]);
 
   useEffect(() => {
     if (!isReady || !isLoggedIn) return;
@@ -1057,26 +1120,72 @@ export function GoalProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setUser = useCallback((nextUser: User) => {
-    setUserState({
+    const created: User = {
       ...nextUser,
+      surname: nextUser.surname ?? '',
+      username: nextUser.username ?? '',
       avatarUri: nextUser.avatarUri ?? null,
       gender: nextUser.gender ?? null,
-    });
+    };
+    setUserState(created);
+  }, []);
+
+  const registerAccount = useCallback((nextUser: User): 'ok' | 'email' | 'username' => {
+    const created: User = {
+      ...nextUser,
+      surname: nextUser.surname ?? '',
+      username: nextUser.username.trim(),
+      email: nextUser.email.trim(),
+      avatarUri: nextUser.avatarUri ?? null,
+      gender: nextUser.gender ?? null,
+    };
+    const existing = accountsRef.current;
+    if (emailTaken(existing, created.email)) return 'email';
+    if (usernameTaken(existing, created.username)) return 'username';
+    setAccounts((prev) => [...prev, created]);
+    setUserState(created);
+    return 'ok';
+  }, []);
+
+  const authenticate = useCallback((identifier: string, password: string): boolean => {
+    const found = accountsRef.current.find(
+      (account) =>
+        identifierMatches(identifier, account.name, account.email, account.username, account.surname) &&
+        secretsMatch(password, account.password),
+    );
+    if (!found) return false;
+    setUserState(found);
+    return true;
   }, []);
 
   const updatePassword = useCallback(
     (currentPassword: string, newPassword: string): boolean => {
-      if (!user || user.password !== currentPassword) {
+      if (!user || !secretsMatch(currentPassword, user.password)) {
         return false;
       }
-      setUserState({ ...user, password: newPassword });
+      const next = { ...user, password: newPassword };
+      setUserState(next);
+      setAccounts((prev) =>
+        prev.map((account) =>
+          foldIdentity(account.email) === foldIdentity(next.email) ? next : account,
+        ),
+      );
       return true;
     },
     [user],
   );
 
   const updateAvatar = useCallback((uri: string) => {
-    setUserState((prev) => (prev ? { ...prev, avatarUri: uri } : prev));
+    setUserState((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, avatarUri: uri };
+      setAccounts((accounts) =>
+        accounts.map((account) =>
+          foldIdentity(account.email) === foldIdentity(next.email) ? next : account,
+        ),
+      );
+      return next;
+    });
   }, []);
 
   const login = useCallback(() => {
@@ -1089,6 +1198,26 @@ export function GoalProvider({ children }: { children: ReactNode }) {
 
   const setProfile = useCallback((nextProfile: string) => {
     setProfileState(nextProfile);
+  }, []);
+
+  const wipeAllData = useCallback(async () => {
+    skipPersist.current = true;
+    const current = goalsRef.current;
+    await Promise.all([
+      ...current.map((goal) => cancelGoalAlarm(goal.id)),
+      ...current.map((goal) => cancelStreakWarning(goal.id)),
+      cancelWaterReminders(),
+    ]);
+    await AsyncStorage.clear();
+    setGoals([]);
+    setScore(0);
+    setUserState(null);
+    setAccounts([]);
+    setIsLoggedIn(false);
+    setProfileState(null);
+    setWaterSettings(null);
+    setWaterDay({ date: todayIso(), entries: [] });
+    skipPersist.current = false;
   }, []);
 
   const value = useMemo(
@@ -1108,6 +1237,8 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       restoreGoal,
       user,
       setUser,
+      registerAccount,
+      authenticate,
       updatePassword,
       updateAvatar,
       login,
@@ -1118,6 +1249,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       logWater,
       undoLastWater,
       clearWaterPlan,
+      wipeAllData,
       score,
     }),
     [
@@ -1136,6 +1268,8 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       restoreGoal,
       user,
       setUser,
+      registerAccount,
+      authenticate,
       updatePassword,
       updateAvatar,
       login,
@@ -1146,6 +1280,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       logWater,
       undoLastWater,
       clearWaterPlan,
+      wipeAllData,
       score,
     ],
   );
@@ -1170,6 +1305,8 @@ export function useUser() {
   const {
     user,
     setUser,
+    registerAccount,
+    authenticate,
     updatePassword,
     updateAvatar,
     score,
@@ -1183,6 +1320,8 @@ export function useUser() {
   return {
     user,
     setUser,
+    registerAccount,
+    authenticate,
     updatePassword,
     updateAvatar,
     score,

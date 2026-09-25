@@ -421,7 +421,7 @@ const styles = StyleSheet.create({
   chip: {
     backgroundColor: '#141414',
     borderWidth: 1,
-    borderColor: '#2A2A2A',
+    borderColor: '#555555',
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -596,11 +596,13 @@ const styles = StyleSheet.create({
     marginTop: 12,
     backgroundColor: '#C1121F',
     borderRadius: 10,
-    paddingVertical: 20,
+    paddingVertical: 18,
     alignItems: 'center',
+    justifyContent: 'center',
+    opacity: 1,
   },
   primaryDisabled: {
-    opacity: 0.4,
+    backgroundColor: '#5A1218',
   },
   primaryLabel: {
     color: '#FFFFFF',

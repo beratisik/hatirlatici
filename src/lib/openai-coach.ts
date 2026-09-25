@@ -11,19 +11,10 @@ import {
   type Weekday,
 } from '@/context/GoalContext';
 
+import { applyCurrentTasks, loadCoachVoice } from '@/lib/coach-prompt';
+
 const MODEL = 'gpt-4o-mini';
 const DAILY: RepeatConfig = { unit: 'gun', interval: 1 };
-
-const COACH_VOICE = [
-  'Sen acımasız, disiplinli ve taviz vermeyen bir yaşam koçusun. Kullanıcı sana kitap okumak, spor yapmak veya kişisel gelişimiyle ilgili hedeflerini veya bahanelerini yazacak. Onun bahanelerini sert bir dille çürüt. Asla uzun paragraflar yazma, Telegram’da mesajlaşıyor gibi kısa, vurucu ve net konuş. Gerektiğinde sorular sorarak onu köşeye sıkıştır.',
-  'Cevabın her zaman tek bir JSON nesnesi olsun. Başka metin, markdown veya açıklama ekleme.',
-  'Şema: {"coach_message":"sohbet balonunda görünecek sert cevap","actions":[{"type":"create","target_task_id":null,"title":"Görev Başlığı","scheduled_time":"HH:MM","days_of_week":["Monday","Wednesday","Friday"],"duration_minutes":30}]}',
-  'type yalnızca create, update veya delete olabilir. scheduled_time 24 saat HH:MM. duration_minutes 10 ile 60 arası tam sayı. days_of_week İngilizce tam gün adlarıdır: Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday. Her gün ise yedi günün hepsini yaz.',
-  'Aynı işi birkaç güne yaymak için her güne ayrı görev açma. Tek bir action kullan ve günleri days_of_week dizisine koy.',
-  'Kullanıcı mevcut bir görevin saatini, gününü veya süresini değiştirmek isterse create değil update kullan. target_task_id listedeki id olsun. Yeni kayıt açma.',
-  'Kullanıcı bir görevi kaldırmak isterse delete kullan ve target_task_id listedeki id olsun. Create için target_task_id null olsun.',
-  'Görev kilitlemiyorsan, değiştirmiyorsan veya silmiyorsan actions boş dizi olsun.',
-].join(' ');
 
 export type CoachTaskSnapshot = {
   id: string;
@@ -86,11 +77,8 @@ export function taskSnapshot(goal: Goal): CoachTaskSnapshot {
   };
 }
 
-export function buildCoachSystemPrompt(tasks: CoachTaskSnapshot[]): string {
-  return [
-    COACH_VOICE,
-    `Kullanıcının anasayfasında şu an şu görevler var: ${JSON.stringify(tasks)}. Eğer kullanıcı bir görevi değiştirmek veya silmek isterse, bu listedeki 'id' değerini kullanarak işlem yap.`,
-  ].join(' ');
+export function buildCoachSystemPrompt(tasks: CoachTaskSnapshot[], voice: string): string {
+  return applyCurrentTasks(voice, JSON.stringify(tasks));
 }
 
 function readApiKey(): string {
@@ -246,8 +234,9 @@ export async function requestCoachTurn(
   const userMessage: OpenAIChatMessage = { role: 'user', content: userText };
   const knownIds = new Set(tasks.map((task) => task.id));
 
+  const voice = await loadCoachVoice();
   const content = await completeChat(
-    [{ role: 'system', content: buildCoachSystemPrompt(tasks) }, ...prior, userMessage],
+    [{ role: 'system', content: buildCoachSystemPrompt(tasks, voice) }, ...prior, userMessage],
     signal,
   );
 
