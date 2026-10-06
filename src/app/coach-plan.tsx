@@ -24,6 +24,7 @@ import {
   taskSnapshot,
   type OpenAIChatMessage,
 } from '@/lib/openai-coach';
+import { pullUserColumn, queueUserState } from '@/lib/remote-db';
 
 const THREADS_KEY = '@hatirlatici/coach-threads';
 const LEGACY_CHAT_KEY = '@hatirlatici/coach-chat';
@@ -139,6 +140,13 @@ function asThread(value: unknown): CoachThread | null {
   };
 }
 
+function isThreadStore(value: unknown): value is ThreadStore {
+  if (!value || typeof value !== 'object') return false;
+  const raw = value as Partial<ThreadStore>;
+  if (typeof raw.activeId !== 'string' || !Array.isArray(raw.threads)) return false;
+  return raw.threads.every((item) => asThread(item) !== null);
+}
+
 async function loadThreads(): Promise<ThreadStore> {
   try {
     const raw = await AsyncStorage.getItem(THREADS_KEY);
@@ -209,7 +217,21 @@ export default function CoachPlanScreen() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const store = await loadThreads();
+      const remote = await pullUserColumn('coach_threads');
+      const local = await loadThreads();
+      const remoteStore =
+        remote.status === 'value' && isThreadStore(remote.value)
+          ? {
+              activeId: remote.value.activeId,
+              threads: remote.value.threads
+                .map(asThread)
+                .filter((item): item is CoachThread => !!item),
+            }
+          : null;
+      const store = remoteStore && remoteStore.threads.length > 0 ? remoteStore : local;
+      if (remote.status === 'empty' && local.threads.some((item) => isStarted(item.bubbles))) {
+        queueUserState({ coach_threads: local });
+      }
       if (cancelled) return;
       const active = store.threads.find((item) => item.id === store.activeId) ?? store.threads[0];
       historyRef.current = active.history;
@@ -235,6 +257,7 @@ export default function CoachPlanScreen() {
       THREADS_KEY,
       JSON.stringify({ activeId, threads: next } satisfies ThreadStore),
     );
+    queueUserState({ coach_threads: { activeId, threads: next } });
   }, [bubbles, threads, activeId, ready]);
 
   function scrollToEnd() {

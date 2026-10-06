@@ -121,6 +121,8 @@ export default function App() {
   const [loginIdentifier, setLoginIdentifier] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
+  const [loginNotice, setLoginNotice] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
 
   // Survey state
   const [currentQuestion, setCurrentQuestion] = useState(0);
@@ -154,7 +156,7 @@ export default function App() {
     registerPasswordsMatch &&
     registerGender !== null;
 
-  function handleRegister() {
+  async function handleRegister() {
     if (
       !registerName.trim() ||
       !registerSurname.trim() ||
@@ -185,43 +187,76 @@ export default function App() {
       setRegisterError('Cinsiyet seçimi zorunlu.');
       return;
     }
-    const created = registerAccount({
-      name: registerName.trim(),
-      surname: registerSurname.trim(),
-      username: registerUsername.trim(),
-      email: registerEmail.trim().toLowerCase(),
-      password: registerPassword,
-      avatarUri: null,
-      gender: registerGender,
-    });
-    if (created === 'email') {
-      setRegisterError('Bu e-posta zaten kayıtlı.');
-      return;
+    setAuthBusy(true);
+    try {
+      const created = await registerAccount({
+        name: registerName.trim(),
+        surname: registerSurname.trim(),
+        username: registerUsername.trim(),
+        email: registerEmail.trim().toLowerCase(),
+        password: registerPassword,
+        avatarUri: null,
+        gender: registerGender,
+      });
+      if (created === 'email') {
+        setRegisterError('Bu e-posta zaten kayıtlı.');
+        return;
+      }
+      if (created === 'username') {
+        setRegisterError('Bu kullanıcı adı alınmış.');
+        return;
+      }
+      if (created === 'confirm') {
+        setRegisterError('');
+        setLoginNotice(
+          'E-posta adresine doğrulama bağlantısı gönderildi. Onayladıktan sonra giriş yap.',
+        );
+        setScreen('login');
+        return;
+      }
+      if (created === 'error') {
+        setRegisterError('Kayıt tamamlanamadı. Bağlantını ve veritabanı kurulumunu kontrol et.');
+        return;
+      }
+      setRegisterError('');
+      setLoginNotice('');
+      setScreen('login');
+    } finally {
+      setAuthBusy(false);
     }
-    if (created === 'username') {
-      setRegisterError('Bu kullanıcı adı alınmış.');
-      return;
-    }
-    setRegisterError('');
-    setScreen('login');
   }
 
-  function handleLogin() {
+  async function handleLogin() {
     if (!loginIdentifier.trim() || !loginPassword.trim()) {
       setLoginError('Lütfen tüm alanları doldur.');
       return;
     }
-    if (!authenticate(loginIdentifier.trim(), loginPassword)) {
-      setLoginError('Kullanıcı adı, e-posta veya şifre hatalı.');
-      return;
+    setAuthBusy(true);
+    try {
+      const result = await authenticate(loginIdentifier.trim(), loginPassword);
+      if (result === 'confirm') {
+        setLoginError('Hesabın duruyor. E-posta henüz onaylanmadı; şifre doğru olsa da giriş açılmaz.');
+        return;
+      }
+      if (result === 'error') {
+        setLoginError('Sunucuya ulaşılamadı. Bağlantını ve veritabanı kurulumunu kontrol et.');
+        return;
+      }
+      if (result !== 'ok') {
+        setLoginError('Kullanıcı adı, e-posta veya şifre hatalı.');
+        return;
+      }
+      setLoginError('');
+      setLoginNotice('');
+      login();
+      if (profile) {
+        router.replace({ pathname: '/home', params: { profile } });
+        return;
+      }
+      setScreen('welcome');
+    } finally {
+      setAuthBusy(false);
     }
-    setLoginError('');
-    login();
-    if (profile) {
-      router.replace({ pathname: '/home', params: { profile } });
-      return;
-    }
-    setScreen('welcome');
   }
 
   function handleGoToRegister() {
@@ -386,11 +421,11 @@ export default function App() {
           )}
           {!!registerError && <Text style={styles.errorText}>{registerError}</Text>}
           <TouchableOpacity
-            style={[styles.button, !canRegister && styles.buttonDisabled]}
+            style={[styles.button, (!canRegister || authBusy) && styles.buttonDisabled]}
             activeOpacity={0.85}
             onPress={handleRegister}
-            disabled={!canRegister}>
-            <Text style={styles.buttonLabel}>KAYIT OL</Text>
+            disabled={!canRegister || authBusy}>
+            <Text style={styles.buttonLabel}>{authBusy ? 'KAYDEDİLİYOR' : 'KAYIT OL'}</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.linkHit} activeOpacity={0.7} onPress={handleGoToLogin}>
             <Text style={styles.linkText}>
@@ -418,9 +453,14 @@ export default function App() {
             onChangeText={setLoginPassword}
             placeholder="Şifre"
           />
+          {!!loginNotice && <Text style={styles.noticeText}>{loginNotice}</Text>}
           {!!loginError && <Text style={styles.errorText}>{loginError}</Text>}
-          <TouchableOpacity style={styles.button} activeOpacity={0.85} onPress={handleLogin}>
-            <Text style={styles.buttonLabel}>GİRİŞ YAP</Text>
+          <TouchableOpacity
+            style={[styles.button, authBusy && styles.buttonDisabled]}
+            activeOpacity={0.85}
+            onPress={handleLogin}
+            disabled={authBusy}>
+            <Text style={styles.buttonLabel}>{authBusy ? 'GİRİLİYOR' : 'GİRİŞ YAP'}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.secondaryButton}
@@ -596,6 +636,12 @@ const styles = StyleSheet.create({
     color: '#FF5C5C',
     fontSize: 13,
     fontWeight: '600',
+  },
+  noticeText: {
+    color: '#C9C9C9',
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 18,
   },
   hintText: {
     color: '#8A8A8A',

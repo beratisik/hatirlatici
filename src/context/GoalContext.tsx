@@ -32,8 +32,23 @@ import {
   type WaterSettings,
 } from '@/lib/water';
 import { emailTaken, foldIdentity, identifierMatches, secretsMatch, usernameTaken } from '@/lib/password';
+import {
+  changeRemotePassword,
+  loadRemoteBundle,
+  pauseRemoteWrites,
+  queueProfile,
+  queueUserState,
+  resetRemoteState,
+  signInRemote,
+  signOutRemote,
+  signUpRemote,
+  type RemoteBundle,
+  type RemoteUser,
+} from '@/lib/remote-db';
+import { isRemoteEnabled } from '@/lib/supabase';
 
 const STORAGE_KEY = '@hatirlatici/state';
+const LEGACY_GOALS_CLEARED_KEY = '@hatirlatici/legacy-device-goals-cleared';
 
 export const STREAK_BONUS_AT = 5;
 export const STREAK_BONUS_POINTS = 10;
@@ -584,9 +599,9 @@ type GoalContextValue = {
 
   user: User | null;
   setUser: (user: User) => void;
-  registerAccount: (user: User) => 'ok' | 'email' | 'username';
-  authenticate: (identifier: string, password: string) => boolean;
-  updatePassword: (currentPassword: string, newPassword: string) => boolean;
+  registerAccount: (user: User) => Promise<'ok' | 'email' | 'username' | 'confirm' | 'error'>;
+  authenticate: (identifier: string, password: string) => Promise<'ok' | 'invalid' | 'confirm' | 'error'>;
+  updatePassword: (currentPassword: string, newPassword: string) => Promise<'ok' | 'invalid' | 'error'>;
   updateAvatar: (uri: string) => void;
   login: () => void;
   logout: () => void;
@@ -611,7 +626,7 @@ function isGender(value: unknown): value is Gender {
 function normalizeUser(raw: unknown): User | null {
   if (!raw || typeof raw !== 'object') return null;
   const value = raw as Partial<User>;
-  if (!value.name || !value.email || !value.password) return null;
+  if (!value.name || !value.email) return null;
   return {
     name: value.name.trim(),
     surname: typeof value.surname === 'string' ? value.surname.trim() : '',
@@ -620,7 +635,7 @@ function normalizeUser(raw: unknown): User | null {
         ? value.username.trim()
         : value.email.split('@')[0]?.trim() || value.name.trim(),
     email: value.email.trim(),
-    password: value.password,
+    password: typeof value.password === 'string' ? value.password : '',
     avatarUri: typeof value.avatarUri === 'string' ? value.avatarUri : null,
     gender: isGender(value.gender) ? value.gender : null,
   };
@@ -729,6 +744,47 @@ function maintainGoals(goals: Goal[]): Goal[] {
   return resetBrokenStreaks(archiveExpiredGoals(goals));
 }
 
+function userFromRemote(remote: RemoteUser): User {
+  return {
+    name: remote.name,
+    surname: remote.surname,
+    username: remote.username,
+    email: remote.email,
+    password: '',
+    avatarUri: remote.avatarUri,
+    gender: remote.gender,
+  };
+}
+
+type HydratedState = {
+  goals: Goal[];
+  score: number;
+  profile: string | null;
+  waterSettings: WaterSettings | null;
+  waterDay: WaterDay;
+};
+
+function hydrateRemote(bundle: RemoteBundle): HydratedState {
+  return {
+    goals: maintainGoals(normalizeGoals(bundle.snapshot.goals)),
+    score: typeof bundle.snapshot.score === 'number' ? bundle.snapshot.score : 0,
+    profile: typeof bundle.snapshot.profile === 'string' ? bundle.snapshot.profile : null,
+    waterSettings: isWaterSettings(bundle.snapshot.waterSettings) ? bundle.snapshot.waterSettings : null,
+    waterDay: normalizeWaterDay(bundle.snapshot.waterDay, todayIso()),
+  };
+}
+
+/** Veritabanından önceki cihaz kaydı bir kez yeni hesaba taşınmıştı. Onu siler. */
+async function discardLegacyDeviceGoals(goals: Goal[]): Promise<Goal[]> {
+  const done = await AsyncStorage.getItem(LEGACY_GOALS_CLEARED_KEY);
+  if (done) return goals;
+  await AsyncStorage.setItem(LEGACY_GOALS_CLEARED_KEY, '1');
+  await Promise.all(
+    goals.flatMap((goal) => [cancelGoalAlarm(goal.id), cancelStreakWarning(goal.id)]),
+  );
+  return [];
+}
+
 export function GoalProvider({ children }: { children: ReactNode }) {
   const [isReady, setIsReady] = useState(false);
   const [goals, setGoals] = useState<Goal[]>([]);
@@ -741,6 +797,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
   const [waterDay, setWaterDay] = useState<WaterDay>(() => ({ date: todayIso(), entries: [] }));
   const [dayStamp, setDayStamp] = useState(() => todayIso());
   const skipPersist = useRef(true);
+  const allowRemoteWrite = useRef(false);
   const goalsRef = useRef<Goal[]>([]);
   const accountsRef = useRef<User[]>([]);
   goalsRef.current = goals;
@@ -751,9 +808,30 @@ export function GoalProvider({ children }: { children: ReactNode }) {
 
     (async () => {
       try {
+        if (isRemoteEnabled()) {
+          const bundle = await loadRemoteBundle();
+          if (cancelled) return;
+          if (bundle) {
+            const hydrated = hydrateRemote(bundle);
+            if (cancelled) return;
+            const goals = await discardLegacyDeviceGoals(hydrated.goals);
+            if (cancelled) return;
+            setGoals(goals);
+            setScore(hydrated.score);
+            setAccounts([]);
+            setUserState(userFromRemote(bundle.user));
+            setIsLoggedIn(true);
+            setProfileState(hydrated.profile);
+            setWaterSettings(hydrated.waterSettings);
+            setWaterDay(hydrated.waterDay);
+            allowRemoteWrite.current = true;
+          }
+          return;
+        }
+
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
-        if (raw && !cancelled) {
-          const parsed = JSON.parse(raw) as Partial<PersistedState>;
+        const parsed = raw ? (JSON.parse(raw) as Partial<PersistedState>) : null;
+        if (parsed && !cancelled) {
           const nextGoals = maintainGoals(normalizeGoals(parsed.goals));
           const nextUser = normalizeUser(parsed.user);
           const nextAccounts = normalizeAccounts(parsed.accounts, nextUser);
@@ -783,12 +861,14 @@ export function GoalProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!isReady || skipPersist.current) return;
+    if (isRemoteEnabled() && !isLoggedIn) return;
 
+    const safeUser = user && isRemoteEnabled() ? { ...user, password: '' } : user;
     const payload: PersistedState = {
       goals,
       score,
-      user,
-      accounts,
+      user: safeUser,
+      accounts: isRemoteEnabled() ? [] : accounts,
       isLoggedIn,
       profile,
       waterSettings,
@@ -796,6 +876,22 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     };
 
     void AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+
+    if (!isRemoteEnabled() || !allowRemoteWrite.current || !user || !isLoggedIn) return;
+    queueProfile({
+      name: user.name,
+      surname: user.surname,
+      username: user.username,
+      gender: user.gender,
+      avatar_uri: user.avatarUri,
+    });
+    queueUserState({
+      goals,
+      score,
+      profile_key: profile,
+      water_settings: waterSettings,
+      water_day: waterDay,
+    });
   }, [goals, score, user, accounts, isLoggedIn, profile, waterSettings, waterDay, isReady]);
 
   useEffect(() => {
@@ -1130,39 +1226,80 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     setUserState(created);
   }, []);
 
-  const registerAccount = useCallback((nextUser: User): 'ok' | 'email' | 'username' => {
-    const created: User = {
-      ...nextUser,
-      surname: nextUser.surname ?? '',
-      username: nextUser.username.trim(),
-      email: nextUser.email.trim(),
-      avatarUri: nextUser.avatarUri ?? null,
-      gender: nextUser.gender ?? null,
-    };
-    const existing = accountsRef.current;
-    if (emailTaken(existing, created.email)) return 'email';
-    if (usernameTaken(existing, created.username)) return 'username';
-    setAccounts((prev) => [...prev, created]);
-    setUserState(created);
-    return 'ok';
-  }, []);
+  const registerAccount = useCallback(
+    async (nextUser: User): Promise<'ok' | 'email' | 'username' | 'confirm' | 'error'> => {
+      const created: User = {
+        ...nextUser,
+        surname: nextUser.surname ?? '',
+        username: nextUser.username.trim(),
+        email: nextUser.email.trim(),
+        avatarUri: nextUser.avatarUri ?? null,
+        gender: nextUser.gender ?? null,
+      };
+      if (isRemoteEnabled()) {
+        return signUpRemote({
+          name: created.name,
+          surname: created.surname,
+          username: created.username,
+          email: created.email,
+          password: created.password,
+          gender: created.gender,
+        });
+      }
+      const existing = accountsRef.current;
+      if (emailTaken(existing, created.email)) return 'email';
+      if (usernameTaken(existing, created.username)) return 'username';
+      setAccounts((prev) => [...prev, created]);
+      setUserState(created);
+      return 'ok';
+    },
+    [],
+  );
 
-  const authenticate = useCallback((identifier: string, password: string): boolean => {
-    const found = accountsRef.current.find(
-      (account) =>
-        identifierMatches(identifier, account.name, account.email, account.username, account.surname) &&
-        secretsMatch(password, account.password),
-    );
-    if (!found) return false;
-    setUserState(found);
-    return true;
-  }, []);
+  const authenticate = useCallback(
+    async (identifier: string, password: string): Promise<'ok' | 'invalid' | 'confirm' | 'error'> => {
+      if (isRemoteEnabled()) {
+        const result = await signInRemote(identifier, password);
+        if (!result.ok) return result.reason;
+        const hydrated = hydrateRemote(result.bundle);
+        setGoals(await discardLegacyDeviceGoals(hydrated.goals));
+        setScore(hydrated.score);
+        setAccounts([]);
+        setUserState(userFromRemote(result.bundle.user));
+        setProfileState(hydrated.profile);
+        setWaterSettings(hydrated.waterSettings);
+        setWaterDay(hydrated.waterDay);
+        allowRemoteWrite.current = true;
+        return 'ok';
+      }
+
+      const found = accountsRef.current.find(
+        (account) =>
+          identifierMatches(
+            identifier,
+            account.name,
+            account.email,
+            account.username,
+            account.surname,
+          ) && secretsMatch(password, account.password),
+      );
+      if (!found) return 'invalid';
+      setUserState(found);
+      return 'ok';
+    },
+    [],
+  );
 
   const updatePassword = useCallback(
-    (currentPassword: string, newPassword: string): boolean => {
-      if (!user || !secretsMatch(currentPassword, user.password)) {
-        return false;
+    async (
+      currentPassword: string,
+      newPassword: string,
+    ): Promise<'ok' | 'invalid' | 'error'> => {
+      if (!user) return 'invalid';
+      if (isRemoteEnabled()) {
+        return changeRemotePassword(user.email, currentPassword, newPassword);
       }
+      if (!secretsMatch(currentPassword, user.password)) return 'invalid';
       const next = { ...user, password: newPassword };
       setUserState(next);
       setAccounts((prev) =>
@@ -1170,7 +1307,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
           foldIdentity(account.email) === foldIdentity(next.email) ? next : account,
         ),
       );
-      return true;
+      return 'ok';
     },
     [user],
   );
@@ -1193,7 +1330,34 @@ export function GoalProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
+    if (!isRemoteEnabled()) {
+      setIsLoggedIn(false);
+      return;
+    }
+    allowRemoteWrite.current = false;
+    pauseRemoteWrites();
+    skipPersist.current = true;
     setIsLoggedIn(false);
+    setUserState(null);
+    setAccounts([]);
+    setGoals([]);
+    setScore(0);
+    setProfileState(null);
+    setWaterSettings(null);
+    setWaterDay({ date: todayIso(), entries: [] });
+    void (async () => {
+      try {
+        await AsyncStorage.multiRemove([
+          STORAGE_KEY,
+          '@hatirlatici/cycle',
+          '@hatirlatici/coach-threads',
+          '@hatirlatici/coach-chat',
+        ]);
+        await signOutRemote();
+      } finally {
+        skipPersist.current = false;
+      }
+    })();
   }, []);
 
   const setProfile = useCallback((nextProfile: string) => {
@@ -1201,6 +1365,8 @@ export function GoalProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const wipeAllData = useCallback(async () => {
+    allowRemoteWrite.current = false;
+    pauseRemoteWrites();
     skipPersist.current = true;
     const current = goalsRef.current;
     await Promise.all([
@@ -1208,6 +1374,10 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       ...current.map((goal) => cancelStreakWarning(goal.id)),
       cancelWaterReminders(),
     ]);
+    if (isRemoteEnabled()) {
+      await resetRemoteState();
+      await signOutRemote();
+    }
     await AsyncStorage.clear();
     setGoals([]);
     setScore(0);

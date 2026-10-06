@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { padDatePart } from '@/context/GoalContext';
 import { addDays, formatDisplayDate, startOfDay, startOfToday } from '@/lib/schedule';
+import { pullUserColumn, queueUserState } from '@/lib/remote-db';
 
 export const CYCLE_STORAGE_KEY = '@hatirlatici/cycle';
 export const DEFAULT_CYCLE_LENGTH = 28;
@@ -64,10 +65,15 @@ export function isCycleSettings(value: unknown): value is CycleSettings {
 
 export async function loadCycleSettings(): Promise<CycleSettings | null> {
   try {
+    const remote = await pullUserColumn('cycle');
+    if (remote.status === 'value' && isCycleSettings(remote.value)) return remote.value;
+
     const raw = await AsyncStorage.getItem(CYCLE_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as unknown;
-    return isCycleSettings(parsed) ? parsed : null;
+    if (!isCycleSettings(parsed)) return null;
+    if (remote.status === 'empty') queueUserState({ cycle: parsed });
+    return parsed;
   } catch {
     return null;
   }
@@ -75,6 +81,7 @@ export async function loadCycleSettings(): Promise<CycleSettings | null> {
 
 export async function saveCycleSettings(settings: CycleSettings): Promise<void> {
   await AsyncStorage.setItem(CYCLE_STORAGE_KEY, JSON.stringify(settings));
+  queueUserState({ cycle: settings });
 }
 
 function ovulationDay(cycleLength: number, periodLength: number): number {
