@@ -23,6 +23,7 @@ export default function SecurityScreen() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
   const passwordsMatch = newPassword.length > 0 && newPassword === confirmPassword;
@@ -34,7 +35,7 @@ export default function SecurityScreen() {
     setMessage(null);
   }
 
-  function handleUpdatePassword() {
+  async function handleUpdatePassword() {
     if (!currentPassword.trim() || !newPassword.trim() || !confirmPassword.trim()) {
       setMessage({ type: 'error', text: 'Lütfen tüm alanları doldur.' });
       return;
@@ -47,15 +48,24 @@ export default function SecurityScreen() {
       setMessage({ type: 'error', text: 'Yeni şifreler eşleşmiyor. Kayıt yok.' });
       return;
     }
-    const success = updatePassword(currentPassword, newPassword);
-    if (!success) {
-      setMessage({ type: 'error', text: 'Mevcut şifre yanlış.' });
-      return;
+    setSaving(true);
+    try {
+      const result = await updatePassword(currentPassword, newPassword);
+      if (result === 'error') {
+        setMessage({ type: 'error', text: 'Şifre güncellenemedi. Bağlantını kontrol et.' });
+        return;
+      }
+      if (result !== 'ok') {
+        setMessage({ type: 'error', text: 'Mevcut şifre yanlış.' });
+        return;
+      }
+      setMessage({ type: 'success', text: 'Şifren güncellendi. Unutursan bahanen kalmaz.' });
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } finally {
+      setSaving(false);
     }
-    setMessage({ type: 'success', text: 'Şifren güncellendi. Unutursan bahanen kalmaz.' });
-    setCurrentPassword('');
-    setNewPassword('');
-    setConfirmPassword('');
   }
 
   return (
@@ -118,11 +128,11 @@ export default function SecurityScreen() {
               </Text>
             )}
             <TouchableOpacity
-              style={[styles.updateButton, !canSubmit && styles.updateButtonDisabled]}
+              style={[styles.updateButton, (!canSubmit || saving) && styles.updateButtonDisabled]}
               activeOpacity={0.85}
               onPress={handleUpdatePassword}
-              disabled={!canSubmit}>
-              <Text style={styles.updateButtonLabel}>ŞİFREYİ KAYDET</Text>
+              disabled={!canSubmit || saving}>
+              <Text style={styles.updateButtonLabel}>{saving ? 'KAYDEDİLİYOR' : 'ŞİFREYİ KAYDET'}</Text>
             </TouchableOpacity>
           </View>
         </ScrollView>

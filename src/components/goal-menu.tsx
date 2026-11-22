@@ -60,6 +60,7 @@ export function GoalMenuSheet({
   visible,
   onClose,
   onEdit,
+  onArchive,
   onPause,
   onFinish,
   onDelete,
@@ -67,6 +68,7 @@ export function GoalMenuSheet({
   visible: boolean;
   onClose: () => void;
   onEdit?: () => void;
+  onArchive?: () => void;
   onPause?: () => void;
   onFinish?: () => void;
   onDelete: () => void;
@@ -86,6 +88,17 @@ export function GoalMenuSheet({
               onEdit();
             }}>
             <Text style={styles.itemLabel}>Düzenle</Text>
+          </TouchableOpacity>
+        ) : null}
+        {onArchive ? (
+          <TouchableOpacity
+            style={styles.item}
+            activeOpacity={0.8}
+            onPress={() => {
+              onClose();
+              onArchive();
+            }}>
+            <Text style={styles.itemLabel}>Arşivle</Text>
           </TouchableOpacity>
         ) : null}
         {onPause ? (

@@ -19,8 +19,9 @@ export default function RootLayout() {
             screenOptions={{
               headerShown: false,
               contentStyle: { backgroundColor: '#050505' },
-            }}
-          />
+            }}>
+            <Stack.Screen name="admin-dashboard" options={{ href: null }} />
+          </Stack>
         </GoalProvider>
       </ThemeProvider>
     </GestureHandlerRootView>

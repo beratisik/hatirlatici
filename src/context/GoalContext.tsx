@@ -12,13 +12,43 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
   cancelGoalAlarm,
+  cancelStreakWarning,
+  cancelWaterReminders,
   presentStreakCoachNotification,
   scheduleGoalAlarm,
+  scheduleStreakWarning,
   syncGoalAlarms,
   syncRankReminder,
+  syncWaterReminders,
 } from '@/lib/notifications';
+import {
+  buildWaterSlots,
+  calculateDailyWaterMl,
+  isWaterSettings,
+  normalizeWaterDay,
+  perSlotMl,
+  type WaterDay,
+  type WaterEntry,
+  type WaterSettings,
+} from '@/lib/water';
+import { emailTaken, foldIdentity, identifierMatches, secretsMatch, usernameTaken } from '@/lib/password';
+import {
+  changeRemotePassword,
+  loadRemoteBundle,
+  pauseRemoteWrites,
+  queueProfile,
+  queueUserState,
+  resetRemoteState,
+  signInRemote,
+  signOutRemote,
+  signUpRemote,
+  type RemoteBundle,
+  type RemoteUser,
+} from '@/lib/remote-db';
+import { isRemoteEnabled } from '@/lib/supabase';
 
 const STORAGE_KEY = '@hatirlatici/state';
+const LEGACY_GOALS_CLEARED_KEY = '@hatirlatici/legacy-device-goals-cleared';
 
 export const STREAK_BONUS_AT = 5;
 export const STREAK_BONUS_POINTS = 10;
@@ -44,6 +74,42 @@ export type RepeatConfig = {
   interval: number;
 };
 
+export const WEEKDAYS = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+] as const;
+
+export type Weekday = (typeof WEEKDAYS)[number];
+
+const WEEKDAY_LABEL: Record<Weekday, string> = {
+  Sunday: 'Paz',
+  Monday: 'Pzt',
+  Tuesday: 'Sal',
+  Wednesday: 'Çar',
+  Thursday: 'Per',
+  Friday: 'Cum',
+  Saturday: 'Cmt',
+};
+
+export function isWeekday(value: unknown): value is Weekday {
+  return typeof value === 'string' && (WEEKDAYS as readonly string[]).includes(value);
+}
+
+export function normalizeDaysOfWeek(value: unknown): Weekday[] | null {
+  if (!Array.isArray(value)) return null;
+  const days = WEEKDAYS.filter((day) => value.includes(day));
+  return days.length > 0 ? [...days] : null;
+}
+
+export function weekdayOf(day: Date): Weekday {
+  return WEEKDAYS[day.getDay()];
+}
+
 const UNIT_LOCATIVE: Record<RepeatUnit, string> = {
   saat: 'saatte',
   gun: 'günde',
@@ -58,7 +124,8 @@ export type ArchiveReason =
   | 'manual'
   | 'ended'
   | 'paused'
-  | 'finished';
+  | 'finished'
+  | 'completed';
 export type GoalOutcome = 'onTime' | 'late' | 'missed';
 export type Gender = 'kadin' | 'erkek' | 'belirtmek_istemiyorum';
 export type PlanCategory = 'kitap' | 'yuruyus' | 'vucut' | 'muzik' | 'dil' | 'akademik';
@@ -74,14 +141,27 @@ export function describeGender(gender: Gender | null): string {
   return GENDER_OPTIONS.find((item) => item.value === gender)?.label ?? 'Belirtilmedi';
 }
 
+/**
+ * 'reminder' = düz anımsatıcı: puan, seri ve swipe yok.
+ * 'coach'    = gelişim hedefi: puan, seri ve swipe mekaniği burada çalışır.
+ */
+export type GoalType = 'reminder' | 'coach';
+
+export const GOAL_TYPE_COLORS: Record<GoalType, string> = {
+  reminder: '#3E7CB1',
+  coach: '#C1121F',
+};
+
 export type Goal = {
   id: string;
+  type: GoalType;
   title: string;
   description: string;
   date: string;
   time: string;
   endTime: string;
   repeat: RepeatConfig | null;
+  daysOfWeek: Weekday[] | null;
   endDate: string;
   lastCompletedDate: string | null;
   lastOutcome: GoalOutcome | null;
@@ -109,6 +189,40 @@ export type CompleteResult = {
 export function formatRepeatSummary(repeat: RepeatConfig | null): string {
   if (!repeat) return 'Tekrar yok';
   return `Her ${repeat.interval} ${UNIT_LOCATIVE[repeat.unit]} bir tekrarla`;
+}
+
+export function formatGoalCadence(goal: Pick<Goal, 'repeat' | 'daysOfWeek'>): string {
+  const days = goal.daysOfWeek;
+  if (days && days.length > 0) {
+    if (days.length === WEEKDAYS.length) return 'Her gün';
+    return days.map((day) => WEEKDAY_LABEL[day]).join(', ');
+  }
+  return formatRepeatSummary(goal.repeat);
+}
+
+function previousScheduledIso(days: Weekday[]): string | null {
+  const start = startOfToday();
+  for (let offset = 1; offset <= WEEKDAYS.length; offset += 1) {
+    const day = new Date(start);
+    day.setDate(day.getDate() - offset);
+    if (days.includes(WEEKDAYS[day.getDay()])) return toIso(day);
+  }
+  return null;
+}
+
+function keepsStreak(goal: Goal): boolean {
+  const last = goal.lastCompletedDate;
+  if (!last) return false;
+  if (last === todayIso()) return true;
+  if (goal.daysOfWeek && goal.daysOfWeek.length > 0) {
+    return last === previousScheduledIso(goal.daysOfWeek);
+  }
+  return last === yesterdayIso();
+}
+
+export function isScheduledToday(goal: Goal): boolean {
+  if (!goal.daysOfWeek || goal.daysOfWeek.length === 0) return true;
+  return goal.daysOfWeek.includes(WEEKDAYS[startOfToday().getDay()]);
 }
 
 export function padDatePart(value: number) {
@@ -194,7 +308,58 @@ export function parseGoalDateParts(
 }
 
 export function isRepeating(goal: Goal): boolean {
-  return goal.repeat != null;
+  return goal.repeat != null || (goal.daysOfWeek?.length ?? 0) > 0;
+}
+
+export function isCoachGoal(goal: Goal): boolean {
+  return goal.type === 'coach';
+}
+
+export function isReminderGoal(goal: Goal): boolean {
+  return goal.type === 'reminder';
+}
+
+/** Tekrarlı bir anımsatıcı bugün için işaretlenmiş mi. Puan ya da seri anlamı taşımaz. */
+export function isReminderDoneToday(goal: Goal): boolean {
+  return goal.type === 'reminder' && !!goal.repeat && goal.lastCompletedDate === todayIso();
+}
+
+export const STREAK_WARNING_HOUR = 21;
+const STREAK_WARNING_LATEST_MINUTES = 23 * 60 + 30;
+const STREAK_WARNING_GRACE_MINUTES = 30;
+
+export function isStreakAtRisk(goal: Goal): boolean {
+  return (
+    goal.type === 'coach' &&
+    !goal.archived &&
+    isRepeating(goal) &&
+    isScheduledToday(goal) &&
+    goal.streak > 0 &&
+    goal.lastCompletedDate !== todayIso()
+  );
+}
+
+/**
+ * Serisi tehlikedeki bir koç hedefi için akşam uyarısının bugünkü saati.
+ * Görev saati akşamdan sonraysa uyarı görevin ardına kayar, gece yarısını geçmez.
+ */
+export function getStreakWarningAt(goal: Goal, now = new Date()): Date | null {
+  if (!isStreakAtRisk(goal)) return null;
+
+  const clock = parseGoalTime(goal.endTime || goal.time);
+  const afterTask = clock ? clock.hour * 60 + clock.minute + STREAK_WARNING_GRACE_MINUTES : 0;
+  const minutes = Math.min(
+    Math.max(STREAK_WARNING_HOUR * 60, afterTask),
+    STREAK_WARNING_LATEST_MINUTES,
+  );
+
+  const fireAt = new Date(now);
+  fireAt.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
+  return fireAt.getTime() > now.getTime() ? fireAt : null;
+}
+
+export function streakWarningMessage(goal: Goal): string {
+  return `Dikkat! ${goal.title} için ${goal.streak} günlük serin bitmek üzere. Harekete geç!`;
 }
 
 export function isHandledToday(goal: Goal): boolean {
@@ -232,6 +397,8 @@ export function describeArchiveReason(reason: ArchiveReason | null): { label: st
       return { label: '⏸ Duraklatıldı', color: '#D98C2B' };
     case 'finished':
       return { label: '🎓 Bitirildi', color: '#3DDC84' };
+    case 'completed':
+      return { label: '✓ Tamamlandı', color: '#3DDC84' };
     case 'manual':
     default:
       return { label: '🗄 Arşivlendi', color: '#8A8A8A' };
@@ -308,8 +475,41 @@ export function getRank(score: number): Rank {
   return current;
 }
 
+export type ScoreLadderRank = {
+  name: string;
+  min: number;
+  max: number | null;
+};
+
+export const SCORE_LADDER: ScoreLadderRank[] = [
+  { name: 'Başlangıç', min: 0, max: 29 },
+  { name: 'Çaylak', min: 30, max: 79 },
+  { name: 'Gönüllü', min: 80, max: 149 },
+  { name: 'Kararlı', min: 150, max: 299 },
+  { name: 'Disiplinli', min: 300, max: 499 },
+  { name: 'Sarsılmaz', min: 500, max: 799 },
+  { name: 'Profesyonel', min: 800, max: 1199 },
+  { name: 'Komando', min: 1200, max: 1799 },
+  { name: 'Kurmay', min: 1800, max: null },
+];
+
+export function getRankName(score: number): string {
+  let name = SCORE_LADDER[0].name;
+  for (const rank of SCORE_LADDER) {
+    if (score >= rank.min) name = rank.name;
+  }
+  return name;
+}
+
+export function formatScoreLadderRange(rank: ScoreLadderRank): string {
+  if (rank.max == null) return `${rank.min}+ Puan`;
+  return `${rank.min} - ${rank.max} Puan`;
+}
+
 export type User = {
   name: string;
+  surname: string;
+  username: string;
   email: string;
   password: string;
   avatarUri: string | null;
@@ -320,8 +520,22 @@ type PersistedState = {
   goals: Goal[];
   score: number;
   user: User | null;
+  accounts?: User[];
   isLoggedIn: boolean;
   profile: string | null;
+  waterSettings: WaterSettings | null;
+  waterDay: WaterDay | null;
+};
+
+export type WaterSummary = {
+  settings: WaterSettings | null;
+  targetMl: number;
+  consumedMl: number;
+  remainingMl: number;
+  progress: number;
+  entries: WaterEntry[];
+  slots: string[];
+  sipMl: number;
 };
 
 type NewGoalInput = Omit<
@@ -341,15 +555,31 @@ type NewGoalInput = Omit<
   | 'sessionMinutes'
   | 'coachReason'
   | 'endTime'
+  | 'daysOfWeek'
 > & {
   category?: PlanCategory | null;
   timeSlot?: TimeSlot | null;
   sessionMinutes?: number;
   coachReason?: string;
   endTime?: string;
+  daysOfWeek?: Weekday[] | null;
 };
 
-type GoalPatch = Partial<Pick<Goal, 'title' | 'time' | 'endDate' | 'endTime' | 'timeSlot'>>;
+type GoalPatch = Partial<
+  Pick<
+    Goal,
+    | 'title'
+    | 'description'
+    | 'time'
+    | 'endDate'
+    | 'endTime'
+    | 'timeSlot'
+    | 'sessionMinutes'
+    | 'daysOfWeek'
+    | 'coachReason'
+    | 'category'
+  >
+>;
 
 type GoalContextValue = {
   isReady: boolean;
@@ -361,6 +591,7 @@ type GoalContextValue = {
   updateGoal: (id: string, patch: GoalPatch) => void;
   deleteGoal: (id: string) => void;
   completeGoal: (id: string, outcome: GoalOutcome) => CompleteResult;
+  completeReminder: (id: string) => void;
   archiveGoal: (id: string) => void;
   pauseGoal: (id: string) => void;
   finishGoal: (id: string) => Goal | null;
@@ -368,11 +599,20 @@ type GoalContextValue = {
 
   user: User | null;
   setUser: (user: User) => void;
-  updatePassword: (currentPassword: string, newPassword: string) => boolean;
+  registerAccount: (user: User) => Promise<'ok' | 'email' | 'username' | 'confirm' | 'error'>;
+  authenticate: (identifier: string, password: string) => Promise<'ok' | 'invalid' | 'confirm' | 'error'>;
+  updatePassword: (currentPassword: string, newPassword: string) => Promise<'ok' | 'invalid' | 'error'>;
   updateAvatar: (uri: string) => void;
   login: () => void;
   logout: () => void;
   setProfile: (profile: string) => void;
+
+  water: WaterSummary;
+  saveWaterSettings: (settings: WaterSettings) => void;
+  logWater: (ml: number) => void;
+  undoLastWater: () => void;
+  clearWaterPlan: () => void;
+  wipeAllData: () => Promise<void>;
 
   score: number;
 };
@@ -386,14 +626,32 @@ function isGender(value: unknown): value is Gender {
 function normalizeUser(raw: unknown): User | null {
   if (!raw || typeof raw !== 'object') return null;
   const value = raw as Partial<User>;
-  if (!value.name || !value.email || !value.password) return null;
+  if (!value.name || !value.email) return null;
   return {
-    name: value.name,
-    email: value.email,
-    password: value.password,
+    name: value.name.trim(),
+    surname: typeof value.surname === 'string' ? value.surname.trim() : '',
+    username:
+      typeof value.username === 'string' && value.username.trim()
+        ? value.username.trim()
+        : value.email.split('@')[0]?.trim() || value.name.trim(),
+    email: value.email.trim(),
+    password: typeof value.password === 'string' ? value.password : '',
     avatarUri: typeof value.avatarUri === 'string' ? value.avatarUri : null,
     gender: isGender(value.gender) ? value.gender : null,
   };
+}
+
+function normalizeAccounts(raw: unknown, fallback: User | null): User[] {
+  const list = Array.isArray(raw)
+    ? raw.map(normalizeUser).filter((item): item is User => !!item)
+    : [];
+  const withFallback = list.length > 0 ? list : fallback ? [fallback] : [];
+  const unique: User[] = [];
+  for (const account of withFallback) {
+    if (emailTaken(unique, account.email) || usernameTaken(unique, account.username)) continue;
+    unique.push(account);
+  }
+  return unique;
 }
 
 function normalizeGoals(raw: unknown): Goal[] {
@@ -402,6 +660,13 @@ function normalizeGoals(raw: unknown): Goal[] {
     .filter((item): item is Goal => !!item && typeof item === 'object' && typeof item.id === 'string')
     .map((item) => ({
       ...item,
+      // Tip alanı eklenmeden önce kaydedilenler: kategori taşıyanlar koç planıdır.
+      type: isGoalType(item.type)
+        ? item.type
+        : isPlanCategory(item.category)
+          ? ('coach' as const)
+          : ('reminder' as const),
+      daysOfWeek: normalizeDaysOfWeek(item.daysOfWeek),
       endDate: typeof item.endDate === 'string' ? item.endDate : '',
       endTime:
         typeof item.endTime === 'string' && item.endTime
@@ -425,6 +690,10 @@ function normalizeGoals(raw: unknown): Goal[] {
     }));
 }
 
+function isGoalType(value: unknown): value is GoalType {
+  return value === 'reminder' || value === 'coach';
+}
+
 function isPlanCategory(value: unknown): value is PlanCategory {
   return (
     value === 'kitap' ||
@@ -441,15 +710,18 @@ function isTimeSlot(value: unknown): value is TimeSlot {
 }
 
 function resetBrokenStreaks(goals: Goal[]): Goal[] {
-  const today = todayIso();
-  const yesterday = yesterdayIso();
   let changed = false;
   const next = goals.map((goal) => {
-    if (goal.archived || goal.archiveReason === 'paused' || !goal.repeat || goal.streak <= 0) {
+    if (
+      goal.type !== 'coach' ||
+      goal.archived ||
+      goal.archiveReason === 'paused' ||
+      !isRepeating(goal) ||
+      goal.streak <= 0
+    ) {
       return goal;
     }
-    const last = goal.lastCompletedDate;
-    if (!last || last === today || last === yesterday) return goal;
+    if (keepsStreak(goal)) return goal;
     changed = true;
     return { ...goal, streak: 0 };
   });
@@ -472,31 +744,105 @@ function maintainGoals(goals: Goal[]): Goal[] {
   return resetBrokenStreaks(archiveExpiredGoals(goals));
 }
 
+function userFromRemote(remote: RemoteUser): User {
+  return {
+    name: remote.name,
+    surname: remote.surname,
+    username: remote.username,
+    email: remote.email,
+    password: '',
+    avatarUri: remote.avatarUri,
+    gender: remote.gender,
+  };
+}
+
+type HydratedState = {
+  goals: Goal[];
+  score: number;
+  profile: string | null;
+  waterSettings: WaterSettings | null;
+  waterDay: WaterDay;
+};
+
+function hydrateRemote(bundle: RemoteBundle): HydratedState {
+  return {
+    goals: maintainGoals(normalizeGoals(bundle.snapshot.goals)),
+    score: typeof bundle.snapshot.score === 'number' ? bundle.snapshot.score : 0,
+    profile: typeof bundle.snapshot.profile === 'string' ? bundle.snapshot.profile : null,
+    waterSettings: isWaterSettings(bundle.snapshot.waterSettings) ? bundle.snapshot.waterSettings : null,
+    waterDay: normalizeWaterDay(bundle.snapshot.waterDay, todayIso()),
+  };
+}
+
+/** Veritabanından önceki cihaz kaydı bir kez yeni hesaba taşınmıştı. Onu siler. */
+async function discardLegacyDeviceGoals(goals: Goal[]): Promise<Goal[]> {
+  const done = await AsyncStorage.getItem(LEGACY_GOALS_CLEARED_KEY);
+  if (done) return goals;
+  await AsyncStorage.setItem(LEGACY_GOALS_CLEARED_KEY, '1');
+  await Promise.all(
+    goals.flatMap((goal) => [cancelGoalAlarm(goal.id), cancelStreakWarning(goal.id)]),
+  );
+  return [];
+}
+
 export function GoalProvider({ children }: { children: ReactNode }) {
   const [isReady, setIsReady] = useState(false);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [user, setUserState] = useState<User | null>(null);
+  const [accounts, setAccounts] = useState<User[]>([]);
   const [score, setScore] = useState(0);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [profile, setProfileState] = useState<string | null>(null);
+  const [waterSettings, setWaterSettings] = useState<WaterSettings | null>(null);
+  const [waterDay, setWaterDay] = useState<WaterDay>(() => ({ date: todayIso(), entries: [] }));
+  const [dayStamp, setDayStamp] = useState(() => todayIso());
   const skipPersist = useRef(true);
+  const allowRemoteWrite = useRef(false);
   const goalsRef = useRef<Goal[]>([]);
+  const accountsRef = useRef<User[]>([]);
   goalsRef.current = goals;
+  accountsRef.current = accounts;
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
+        if (isRemoteEnabled()) {
+          const bundle = await loadRemoteBundle();
+          if (cancelled) return;
+          if (bundle) {
+            const hydrated = hydrateRemote(bundle);
+            if (cancelled) return;
+            const goals = await discardLegacyDeviceGoals(hydrated.goals);
+            if (cancelled) return;
+            setGoals(goals);
+            setScore(hydrated.score);
+            setAccounts([]);
+            setUserState(userFromRemote(bundle.user));
+            setIsLoggedIn(true);
+            setProfileState(hydrated.profile);
+            setWaterSettings(hydrated.waterSettings);
+            setWaterDay(hydrated.waterDay);
+            allowRemoteWrite.current = true;
+          }
+          return;
+        }
+
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
-        if (raw && !cancelled) {
-          const parsed = JSON.parse(raw) as Partial<PersistedState>;
+        const parsed = raw ? (JSON.parse(raw) as Partial<PersistedState>) : null;
+        if (parsed && !cancelled) {
           const nextGoals = maintainGoals(normalizeGoals(parsed.goals));
+          const nextUser = normalizeUser(parsed.user);
+          const nextAccounts = normalizeAccounts(parsed.accounts, nextUser);
           setGoals(nextGoals);
           setScore(typeof parsed.score === 'number' ? parsed.score : 0);
-          setUserState(normalizeUser(parsed.user));
+          setAccounts(nextAccounts);
+          setUserState(nextUser);
           setIsLoggedIn(Boolean(parsed.isLoggedIn && parsed.user));
           setProfileState(typeof parsed.profile === 'string' ? parsed.profile : null);
+          setWaterSettings(isWaterSettings(parsed.waterSettings) ? parsed.waterSettings : null);
+          setWaterDay(normalizeWaterDay(parsed.waterDay, todayIso()));
         }
       } catch {
         // Bozuk kayıt varsa boş state ile devam et.
@@ -515,17 +861,38 @@ export function GoalProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!isReady || skipPersist.current) return;
+    if (isRemoteEnabled() && !isLoggedIn) return;
 
+    const safeUser = user && isRemoteEnabled() ? { ...user, password: '' } : user;
     const payload: PersistedState = {
       goals,
       score,
-      user,
+      user: safeUser,
+      accounts: isRemoteEnabled() ? [] : accounts,
       isLoggedIn,
       profile,
+      waterSettings,
+      waterDay,
     };
 
     void AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  }, [goals, score, user, isLoggedIn, profile, isReady]);
+
+    if (!isRemoteEnabled() || !allowRemoteWrite.current || !user || !isLoggedIn) return;
+    queueProfile({
+      name: user.name,
+      surname: user.surname,
+      username: user.username,
+      gender: user.gender,
+      avatar_uri: user.avatarUri,
+    });
+    queueUserState({
+      goals,
+      score,
+      profile_key: profile,
+      water_settings: waterSettings,
+      water_day: waterDay,
+    });
+  }, [goals, score, user, accounts, isLoggedIn, profile, waterSettings, waterDay, isReady]);
 
   useEffect(() => {
     if (!isReady || !isLoggedIn) return;
@@ -535,12 +902,45 @@ export function GoalProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!isReady) return;
     setGoals((prev) => maintainGoals(prev));
+    setWaterDay((prev) => (prev.date === todayIso() ? prev : { date: todayIso(), entries: [] }));
   }, [isReady]);
 
   useEffect(() => {
     if (!isReady || !isLoggedIn) return;
     void syncGoalAlarms(goalsRef.current);
   }, [isReady, isLoggedIn]);
+
+  // Serisi tehlikeye giren koç hedefleri için akşam uyarısını kur, riski
+  // kalmayanlarınkini kaldır.
+  useEffect(() => {
+    if (!isReady || !isLoggedIn) return;
+    const now = new Date();
+    for (const goal of goals) {
+      if (goal.type !== 'coach') continue;
+      const fireAt = getStreakWarningAt(goal, now);
+      if (fireAt) {
+        void scheduleStreakWarning(goal.id, fireAt, streakWarningMessage(goal));
+      } else {
+        void cancelStreakWarning(goal.id);
+      }
+    }
+  }, [isReady, isLoggedIn, goals]);
+
+  // Gün 00:00'da dönünce, uygulama açıkken de işaretlenmemiş serileri sıfırla.
+  useEffect(() => {
+    if (!isReady) return;
+    const midnight = startOfToday();
+    midnight.setDate(midnight.getDate() + 1);
+    const timer = setTimeout(
+      () => {
+        setDayStamp(todayIso());
+        setGoals((prev) => maintainGoals(prev));
+        setWaterDay((prev) => (prev.date === todayIso() ? prev : { date: todayIso(), entries: [] }));
+      },
+      Math.max(1000, midnight.getTime() - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [isReady, dayStamp]);
 
   const addGoal = useCallback((goal: NewGoalInput) => {
     const created: Goal = {
@@ -564,6 +964,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       pagesRead: 0,
       startedAt: todayIso(),
       coachReason: goal.coachReason ?? '',
+      daysOfWeek: normalizeDaysOfWeek(goal.daysOfWeek),
     };
     setGoals((prev) => maintainGoals([...prev, created]));
     void scheduleGoalAlarm(created);
@@ -573,8 +974,12 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     const current = goalsRef.current.find((item) => item.id === id);
     if (!current) return;
     const next = { ...current, ...patch };
-    if (patch.time && !patch.endTime && current.sessionMinutes > 0) {
-      next.endTime = addMinutesToClock(next.time, current.sessionMinutes);
+    if (patch.daysOfWeek !== undefined) {
+      next.daysOfWeek = normalizeDaysOfWeek(patch.daysOfWeek);
+    }
+    const minutes = patch.sessionMinutes ?? current.sessionMinutes;
+    if ((patch.time || patch.sessionMinutes) && !patch.endTime && next.time && minutes > 0) {
+      next.endTime = addMinutesToClock(next.time, minutes);
     }
     setGoals((prev) => maintainGoals(prev.map((item) => (item.id === id ? next : item))));
     void scheduleGoalAlarm(next);
@@ -582,6 +987,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
 
   const deleteGoal = useCallback((id: string) => {
     void cancelGoalAlarm(id);
+    void cancelStreakWarning(id);
     setGoals((prev) => prev.filter((item) => item.id !== id));
   }, []);
 
@@ -596,20 +1002,23 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     const day = todayIso();
     const goal = goalsRef.current.find((item) => item.id === id);
     if (!goal || goal.archived) return empty;
-    if (goal.repeat && goal.lastCompletedDate === day) return empty;
+    // Puan ve seri yalnızca koç modülüne ait; anımsatıcılar tamamlanmaz.
+    if (goal.type !== 'coach') return empty;
+    if (isRepeating(goal) && goal.lastCompletedDate === day) return empty;
+    if (goal.daysOfWeek && goal.daysOfWeek.length > 0 && !isScheduledToday(goal)) return empty;
 
     let nextStreak = goal.streak;
-    if (goal.repeat) {
+    if (isRepeating(goal)) {
       if (outcome === 'missed') {
         nextStreak = 0;
-      } else if (goal.lastCompletedDate === yesterdayIso()) {
-        nextStreak = goal.streak + 1;
+      } else if (keepsStreak({ ...goal, lastCompletedDate: goal.lastCompletedDate })) {
+        nextStreak = goal.lastCompletedDate === day ? goal.streak : goal.streak + 1;
       } else {
         nextStreak = 1;
       }
     }
 
-    const bonus = goal.repeat && outcome === 'onTime' && nextStreak === STREAK_BONUS_AT;
+    const bonus = isRepeating(goal) && outcome === 'onTime' && nextStreak === STREAK_BONUS_AT;
     const points = bonus ? STREAK_BONUS_POINTS : OUTCOME_POINTS[outcome];
     const counted = outcome !== 'missed';
     const extraPages =
@@ -625,7 +1034,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
           pointsEarned: item.pointsEarned + points,
           pagesRead: item.pagesRead + extraPages,
         };
-        if (item.repeat) {
+        if (isRepeating(item)) {
           return {
             ...item,
             ...stats,
@@ -639,7 +1048,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     );
     setScore((prev) => prev + points);
 
-    if (!goal.repeat) {
+    if (!isRepeating(goal)) {
       void cancelGoalAlarm(id);
     }
 
@@ -654,6 +1063,44 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       bonus: Boolean(bonus),
       message: getConfrontationMessage(nextStreak, Boolean(bonus)),
     };
+  }, []);
+
+  /**
+   * Anımsatıcıyı tamamlandı olarak işaretler. Tekrarlıysa arşive düşmez,
+   * sadece bugünü kapatır ve bir sonraki tekrarını bekler.
+   */
+  const completeReminder = useCallback((id: string) => {
+    const goal = goalsRef.current.find((item) => item.id === id);
+    if (!goal || goal.type !== 'reminder' || goal.archived) return;
+
+    if (goal.repeat) {
+      setGoals((prev) =>
+        prev.map((item) =>
+          item.id === id
+            ? {
+                ...item,
+                lastCompletedDate: todayIso(),
+                completionCount: item.completionCount + 1,
+              }
+            : item,
+        ),
+      );
+      return;
+    }
+
+    void cancelGoalAlarm(id);
+    setGoals((prev) =>
+      prev.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              completionCount: item.completionCount + 1,
+              archived: true,
+              archiveReason: 'completed' as const,
+            }
+          : item,
+      ),
+    );
   }, []);
 
   const archiveGoal = useCallback((id: string) => {
@@ -704,27 +1151,178 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const setUser = useCallback((nextUser: User) => {
-    setUserState({
-      ...nextUser,
-      avatarUri: nextUser.avatarUri ?? null,
-      gender: nextUser.gender ?? null,
-    });
+  const water = useMemo<WaterSummary>(() => {
+    const targetMl = waterSettings
+      ? calculateDailyWaterMl(waterSettings.heightCm, waterSettings.weightKg)
+      : 0;
+    const slots = waterSettings
+      ? buildWaterSlots(waterSettings.wakeTime, waterSettings.intervalMinutes)
+      : [];
+    const consumedMl = waterDay.entries.reduce((total, entry) => total + entry.ml, 0);
+
+    return {
+      settings: waterSettings,
+      targetMl,
+      consumedMl,
+      remainingMl: Math.max(0, targetMl - consumedMl),
+      progress: targetMl > 0 ? Math.min(1, consumedMl / targetMl) : 0,
+      entries: waterDay.entries,
+      slots,
+      sipMl: perSlotMl(targetMl, slots.length),
+    };
+  }, [waterSettings, waterDay]);
+
+  // Uyarılar yalnızca plan ya da aralık değişince yeniden kurulur.
+  useEffect(() => {
+    if (!isReady || !isLoggedIn) return;
+    if (!waterSettings) {
+      void cancelWaterReminders();
+      return;
+    }
+    void syncWaterReminders(water.slots, water.sipMl);
+  }, [isReady, isLoggedIn, waterSettings, water.slots, water.sipMl]);
+
+  const saveWaterSettings = useCallback((settings: WaterSettings) => {
+    setWaterSettings(settings);
+    setWaterDay((prev) => (prev.date === todayIso() ? prev : { date: todayIso(), entries: [] }));
   }, []);
 
-  const updatePassword = useCallback(
-    (currentPassword: string, newPassword: string): boolean => {
-      if (!user || user.password !== currentPassword) {
-        return false;
+  const logWater = useCallback((ml: number) => {
+    if (ml <= 0) return;
+    const day = todayIso();
+    const now = new Date();
+    const entry: WaterEntry = {
+      id: `${Date.now()}-${Math.round(Math.random() * 1000)}`,
+      ml,
+      time: `${padDatePart(now.getHours())}:${padDatePart(now.getMinutes())}`,
+    };
+    setWaterDay((prev) =>
+      prev.date === day
+        ? { date: day, entries: [...prev.entries, entry] }
+        : { date: day, entries: [entry] },
+    );
+  }, []);
+
+  const undoLastWater = useCallback(() => {
+    setWaterDay((prev) =>
+      prev.entries.length === 0 ? prev : { ...prev, entries: prev.entries.slice(0, -1) },
+    );
+  }, []);
+
+  const clearWaterPlan = useCallback(() => {
+    void cancelWaterReminders();
+    setWaterSettings(null);
+    setWaterDay({ date: todayIso(), entries: [] });
+  }, []);
+
+  const setUser = useCallback((nextUser: User) => {
+    const created: User = {
+      ...nextUser,
+      surname: nextUser.surname ?? '',
+      username: nextUser.username ?? '',
+      avatarUri: nextUser.avatarUri ?? null,
+      gender: nextUser.gender ?? null,
+    };
+    setUserState(created);
+  }, []);
+
+  const registerAccount = useCallback(
+    async (nextUser: User): Promise<'ok' | 'email' | 'username' | 'confirm' | 'error'> => {
+      const created: User = {
+        ...nextUser,
+        surname: nextUser.surname ?? '',
+        username: nextUser.username.trim(),
+        email: nextUser.email.trim(),
+        avatarUri: nextUser.avatarUri ?? null,
+        gender: nextUser.gender ?? null,
+      };
+      if (isRemoteEnabled()) {
+        return signUpRemote({
+          name: created.name,
+          surname: created.surname,
+          username: created.username,
+          email: created.email,
+          password: created.password,
+          gender: created.gender,
+        });
       }
-      setUserState({ ...user, password: newPassword });
-      return true;
+      const existing = accountsRef.current;
+      if (emailTaken(existing, created.email)) return 'email';
+      if (usernameTaken(existing, created.username)) return 'username';
+      setAccounts((prev) => [...prev, created]);
+      setUserState(created);
+      return 'ok';
+    },
+    [],
+  );
+
+  const authenticate = useCallback(
+    async (identifier: string, password: string): Promise<'ok' | 'invalid' | 'confirm' | 'error'> => {
+      if (isRemoteEnabled()) {
+        const result = await signInRemote(identifier, password);
+        if (!result.ok) return result.reason;
+        const hydrated = hydrateRemote(result.bundle);
+        setGoals(await discardLegacyDeviceGoals(hydrated.goals));
+        setScore(hydrated.score);
+        setAccounts([]);
+        setUserState(userFromRemote(result.bundle.user));
+        setProfileState(hydrated.profile);
+        setWaterSettings(hydrated.waterSettings);
+        setWaterDay(hydrated.waterDay);
+        allowRemoteWrite.current = true;
+        return 'ok';
+      }
+
+      const found = accountsRef.current.find(
+        (account) =>
+          identifierMatches(
+            identifier,
+            account.name,
+            account.email,
+            account.username,
+            account.surname,
+          ) && secretsMatch(password, account.password),
+      );
+      if (!found) return 'invalid';
+      setUserState(found);
+      return 'ok';
+    },
+    [],
+  );
+
+  const updatePassword = useCallback(
+    async (
+      currentPassword: string,
+      newPassword: string,
+    ): Promise<'ok' | 'invalid' | 'error'> => {
+      if (!user) return 'invalid';
+      if (isRemoteEnabled()) {
+        return changeRemotePassword(user.email, currentPassword, newPassword);
+      }
+      if (!secretsMatch(currentPassword, user.password)) return 'invalid';
+      const next = { ...user, password: newPassword };
+      setUserState(next);
+      setAccounts((prev) =>
+        prev.map((account) =>
+          foldIdentity(account.email) === foldIdentity(next.email) ? next : account,
+        ),
+      );
+      return 'ok';
     },
     [user],
   );
 
   const updateAvatar = useCallback((uri: string) => {
-    setUserState((prev) => (prev ? { ...prev, avatarUri: uri } : prev));
+    setUserState((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, avatarUri: uri };
+      setAccounts((accounts) =>
+        accounts.map((account) =>
+          foldIdentity(account.email) === foldIdentity(next.email) ? next : account,
+        ),
+      );
+      return next;
+    });
   }, []);
 
   const login = useCallback(() => {
@@ -732,11 +1330,64 @@ export function GoalProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
+    if (!isRemoteEnabled()) {
+      setIsLoggedIn(false);
+      return;
+    }
+    allowRemoteWrite.current = false;
+    pauseRemoteWrites();
+    skipPersist.current = true;
     setIsLoggedIn(false);
+    setUserState(null);
+    setAccounts([]);
+    setGoals([]);
+    setScore(0);
+    setProfileState(null);
+    setWaterSettings(null);
+    setWaterDay({ date: todayIso(), entries: [] });
+    void (async () => {
+      try {
+        await AsyncStorage.multiRemove([
+          STORAGE_KEY,
+          '@hatirlatici/cycle',
+          '@hatirlatici/coach-threads',
+          '@hatirlatici/coach-chat',
+        ]);
+        await signOutRemote();
+      } finally {
+        skipPersist.current = false;
+      }
+    })();
   }, []);
 
   const setProfile = useCallback((nextProfile: string) => {
     setProfileState(nextProfile);
+  }, []);
+
+  const wipeAllData = useCallback(async () => {
+    allowRemoteWrite.current = false;
+    pauseRemoteWrites();
+    skipPersist.current = true;
+    const current = goalsRef.current;
+    await Promise.all([
+      ...current.map((goal) => cancelGoalAlarm(goal.id)),
+      ...current.map((goal) => cancelStreakWarning(goal.id)),
+      cancelWaterReminders(),
+    ]);
+    if (isRemoteEnabled()) {
+      await resetRemoteState();
+      await signOutRemote();
+    }
+    await AsyncStorage.clear();
+    setGoals([]);
+    setScore(0);
+    setUserState(null);
+    setAccounts([]);
+    setIsLoggedIn(false);
+    setProfileState(null);
+    setWaterSettings(null);
+    setWaterDay({ date: todayIso(), entries: [] });
+    skipPersist.current = false;
   }, []);
 
   const value = useMemo(
@@ -749,17 +1400,26 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       updateGoal,
       deleteGoal,
       completeGoal,
+      completeReminder,
       archiveGoal,
       pauseGoal,
       finishGoal,
       restoreGoal,
       user,
       setUser,
+      registerAccount,
+      authenticate,
       updatePassword,
       updateAvatar,
       login,
       logout,
       setProfile,
+      water,
+      saveWaterSettings,
+      logWater,
+      undoLastWater,
+      clearWaterPlan,
+      wipeAllData,
       score,
     }),
     [
@@ -771,17 +1431,26 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       updateGoal,
       deleteGoal,
       completeGoal,
+      completeReminder,
       archiveGoal,
       pauseGoal,
       finishGoal,
       restoreGoal,
       user,
       setUser,
+      registerAccount,
+      authenticate,
       updatePassword,
       updateAvatar,
       login,
       logout,
       setProfile,
+      water,
+      saveWaterSettings,
+      logWater,
+      undoLastWater,
+      clearWaterPlan,
+      wipeAllData,
       score,
     ],
   );
@@ -797,10 +1466,17 @@ export function useGoals() {
   return context;
 }
 
+export function useWater() {
+  const { water, saveWaterSettings, logWater, undoLastWater, clearWaterPlan } = useGoals();
+  return { water, saveWaterSettings, logWater, undoLastWater, clearWaterPlan };
+}
+
 export function useUser() {
   const {
     user,
     setUser,
+    registerAccount,
+    authenticate,
     updatePassword,
     updateAvatar,
     score,
@@ -814,6 +1490,8 @@ export function useUser() {
   return {
     user,
     setUser,
+    registerAccount,
+    authenticate,
     updatePassword,
     updateAvatar,
     score,

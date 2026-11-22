@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Alert,
   Modal,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -16,6 +17,15 @@ import { useRouter } from 'expo-router';
 
 import { describeGender, getRank, useUser } from '@/context/GoalContext';
 
+const APP_VERSION = '1.0.0';
+const SECRET_TAPS = 7;
+const SECRET_WINDOW_MS = 1800;
+
+function adminPassword() {
+  const env = process.env as Record<string, string | undefined>;
+  return env.EXPO_PUBLIC_ADMIN_PASSWORD?.trim() || 'admin123';
+}
+
 export default function ProfileScreen() {
   const router = useRouter();
   const { user, score, updateAvatar, logout } = useUser();
@@ -24,9 +34,14 @@ export default function ProfileScreen() {
   const [picking, setPicking] = useState(false);
   const [avatarMenuVisible, setAvatarMenuVisible] = useState(false);
   const [viewerVisible, setViewerVisible] = useState(false);
+  const [gateOpen, setGateOpen] = useState(false);
+  const [gateCode, setGateCode] = useState('');
+  const secretTaps = useRef(0);
+  const secretTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const displayName = user?.name || 'Kullanıcı';
+  const displayName = [user?.name, user?.surname].filter(Boolean).join(' ') || 'Kullanıcı';
   const displayEmail = user?.email || '—';
+  const displayUsername = user?.username ? `@${user.username}` : null;
   const initial = displayName.charAt(0).toUpperCase() || '?';
   const avatarUri = user?.avatarUri ?? null;
 
@@ -46,6 +61,26 @@ export default function ProfileScreen() {
   function handleViewAvatar() {
     setAvatarMenuVisible(false);
     setViewerVisible(true);
+  }
+
+  function handleSecretTap() {
+    secretTaps.current += 1;
+    if (secretTimer.current) clearTimeout(secretTimer.current);
+    secretTimer.current = setTimeout(() => {
+      secretTaps.current = 0;
+    }, SECRET_WINDOW_MS);
+    if (secretTaps.current < SECRET_TAPS) return;
+    secretTaps.current = 0;
+    setGateCode('');
+    setGateOpen(true);
+  }
+
+  function handleGateSubmit() {
+    const ok = gateCode === adminPassword();
+    setGateCode('');
+    setGateOpen(false);
+    if (!ok) return;
+    router.push('/admin-dashboard');
   }
 
   function handleUploadAvatar() {
@@ -105,6 +140,7 @@ export default function ProfileScreen() {
           </TouchableOpacity>
           <View style={styles.userInfo}>
             <Text style={styles.userName}>{displayName}</Text>
+            {!!displayUsername && <Text style={styles.userUsername}>{displayUsername}</Text>}
             <Text style={styles.userEmail}>{displayEmail}</Text>
             <Text style={styles.userGender}>{describeGender(user?.gender ?? null)}</Text>
             <Text style={styles.avatarHint}>Görüntüle veya yeni fotoğraf yükle</Text>
@@ -135,6 +171,14 @@ export default function ProfileScreen() {
         <TouchableOpacity style={styles.logoutButton} activeOpacity={0.85} onPress={handleLogout}>
           <Text style={styles.logoutButtonLabel}>ÇIKIŞ YAP</Text>
         </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.versionHit}
+          activeOpacity={1}
+          accessibilityRole="text"
+          onPress={handleSecretTap}>
+          <Text style={styles.versionText}>v{APP_VERSION}</Text>
+        </TouchableOpacity>
       </ScrollView>
 
       <Modal
@@ -163,6 +207,35 @@ export default function ProfileScreen() {
               activeOpacity={0.8}
               onPress={() => setAvatarMenuVisible(false)}>
               <Text style={styles.menuCancelLabel}>Vazgeç</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={gateOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setGateOpen(false)}>
+        <View style={styles.gateOverlay}>
+          <TouchableOpacity
+            style={styles.gateBackdrop}
+            activeOpacity={1}
+            onPress={() => setGateOpen(false)}
+          />
+          <View style={styles.gateSheet}>
+            <TextInput
+              value={gateCode}
+              onChangeText={setGateCode}
+              secureTextEntry
+              autoFocus
+              placeholder=""
+              placeholderTextColor="#2A2A2A"
+              style={styles.gateInput}
+              onSubmitEditing={handleGateSubmit}
+            />
+            <TouchableOpacity style={styles.gateSubmit} activeOpacity={0.85} onPress={handleGateSubmit}>
+              <Text style={styles.gateSubmitLabel}>Tamam</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -281,6 +354,11 @@ const styles = StyleSheet.create({
     fontSize: 19,
     fontWeight: '800',
   },
+  userUsername: {
+    color: '#C8C8C8',
+    fontSize: 13,
+    fontWeight: '700',
+  },
   userEmail: {
     color: '#8A8A8A',
     fontSize: 13,
@@ -385,6 +463,55 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
     letterSpacing: 1,
+  },
+  versionHit: {
+    alignSelf: 'center',
+    paddingVertical: 18,
+    paddingHorizontal: 28,
+  },
+  versionText: {
+    color: '#2F2F2F',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.6,
+  },
+  gateOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+  },
+  gateBackdrop: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+  },
+  gateSheet: {
+    backgroundColor: '#141414',
+    borderWidth: 1,
+    borderColor: '#2A2A2A',
+    borderRadius: 14,
+    padding: 16,
+    gap: 10,
+  },
+  gateInput: {
+    backgroundColor: '#0C0C0C',
+    borderWidth: 1,
+    borderColor: '#2A2A2A',
+    borderRadius: 10,
+    color: '#F5F5F5',
+    fontSize: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  gateSubmit: {
+    backgroundColor: '#1A1A1A',
+    borderRadius: 10,
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  gateSubmitLabel: {
+    color: '#B5B5B5',
+    fontSize: 14,
+    fontWeight: '700',
   },
   menuOverlay: {
     flex: 1,

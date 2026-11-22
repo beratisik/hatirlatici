@@ -29,7 +29,7 @@ export default function ReportCardScreen() {
   const shareText = goal
     ? [
         'MEZUNİYET KARNESİ',
-        user?.name ? user.name.toUpperCase() : 'Disiplin',
+        user ? [user.name, user.surname].filter(Boolean).join(' ').toUpperCase() : 'Disiplin',
         goal.title,
         isBook ? `${books} kitap · ${pages} sayfa` : `${goal.completionCount} seans`,
         `${hours} saat · ${points} puan · ${goal.streak} günlük seri`,

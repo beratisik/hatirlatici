@@ -1,0 +1,86 @@
+PROJE RAPORU: "TAVİZSİZ KOÇ" DİSİPLİN UYGULAMASI
+1. Proje Vizyonu ve Amacı
+Bu uygulama klasik bir "To-Do" (Yapılacaklar) veya planlama uygulaması değildir. Hedef kitlesi; plan yapıp uymayanlar, sürekli erteleyenler ve konfor alanından çıkamayanlardır. Uygulama, siyah/kırmızı/neon yeşil karanlık (dark) temasıyla kullanıcıya otoriter bir "dijital koç" deneyimi sunar. Oyunlaştırma (Disiplin puanı ve rütbe sistemi) ve yapay zeka ile kişiselleştirilmiş acımasız planlar sunarak kullanıcıyı eyleme zorlar.
+
+2. Kullanıcı Akışları ve Arayüz (UI/UX) Detayları
+A. Kimlik Doğrulama ve Profil (Auth & Profile)
+Kayıt Ol / Giriş Yap: Kullanıcı e-posta ve şifre ile sisteme dahil olur (Supabase Auth). Kayıt sırasında Cinsiyet (Kadın/Erkek), Boy ve Kilo bilgileri alınır.
+
+Profil Ekranı: Kullanıcının güncel "Disiplin Puanı" ve bu puana göre kazandığı "Rütbe" (Örn: Bahaneci, Çaylak, Disiplinli) gösterilir. Ekranın altında parlak kırmızı, tam dolu bir "ÇIKIŞ YAP" butonu bulunur.
+
+B. Ana Ekran (Dashboard) ve Görev Kartları (Swipe UX)
+Ana ekran, günün görevlerinin listelendiği merkezdir. Üst kısımda kullanıcıyı yönlendiren, köşeleri yuvarlatılmış şık koyu gri bir bilgi kutucuğu (Banner) yer alır.
+
+Sağa Kaydırma (Right Swipe - Başarı):
+
+Kart sağa çekildiğinde Yeşil "Yaptım" (+2 Puan) ve Turuncu "Geç Yaptım" (+1 Puan) butonları çıkar.
+
+Bunlara basıldığında görev tamamlandı listesine geçer, puan Supabase'deki profile eklenir.
+
+Sola Kaydırma (Left Swipe - Başarısızlık):
+
+Kart sola çekildiğinde Kırmızı "Yapmadım" (-1 Puan) ve Gri "Arşivle" (Cezasız, iptal) butonları çıkar.
+
+Düzenleme Menüsü (...): Her kartın köşesindeki üç noktaya basıldığında bir alt menü açılır ve görev saati/detayı değiştirilebilir.
+
+C. Sol Açılır Menü (Drawer Navigation)
+Ekranın solundan kaydırılarak veya menü ikonuna basılarak açılır. Seçenekler:
+
+Yeni Hedef (Anımsatıcı Ekle): Klasik görev ekleme sayfası. Input alanında kullanıcıyı kışkırtan "Ne yapacaksın? Söyle ve yap." gibi metinler bulunur.
+
+Koçtan Plan Al: Yapay Zeka modülüne giriş.
+
+Su Takibi: Ayrı bir modül.
+
+Döngü Takibi: (Sadece Kayıt sırasında cinsiyetini "Kadın" seçenlerde görünür).
+
+D. Yapay Zeka: Koçtan Plan Al Modülü
+Kullanıcıya özel plan üretilen dinamik sistemdir.
+
+Kategori Seçimi: Okuma, Yürüyüş/Kardiyo vb. kategoriler listelenir.
+
+Veri Toplama: Kategori seçilince kullanıcıya "Mazeretin nedir?", "Günde ne kadar vaktin var?", "Hamlık seviyen ne?" gibi net sorular sorulur.
+
+Planın Doğması: Veriler OpenAI API'ye gönderilir. AI, JSON formatında bir haftalık/aylık parçalanmış görev listesi döner. Bu liste doğrudan kullanıcının Ana Ekranına saatli görevler (Tasks) olarak düşer.
+
+E. Modüller: Döngü ve Su Takibi
+Su Takibi Modülü:
+
+Sisteme girilen boy/kilo verisiyle günlük hedef su miktarı hesaplanır.
+
+Ekranda "Ne sıklıkla uyaralım?" sorusu ve altında gri çerçeveli (outline) zaman butonları (Saat başı, 3 saatte bir vb.) bulunur.
+
+En alttaki canlı kırmızı "PLANI BAŞLAT" butonu ile bildirim döngüsü kurulur.
+
+Döngü Takibi (Cycle Tracker - Sadece Kadınlar İçin):
+
+Kullanıcıdan son adet tarihi, döngü uzunluğu (örn: 28) ve kanama süresi alınır.
+
+Ekranın tam ortasında fıstık yeşili veya vurgu kırmızısıyla büyük bir sayaç ("Adete Kalan Gün" veya "Gecikme") yazar.
+
+Alt tarafta, kullanıcının döngüsü başladığında basıp sayacı sıfırlayacağı devasa bir "DÖNGÜM BAŞLADI" butonu bulunur.
+
+AI Koç, plan yaparken veritabanındaki bu "Kalan Gün" verisine bakar (Örn: Adetinin ilk 2 günündeyse koşu yerine hafif esneme planı verir).
+
+F. Arşiv ve İstatistik (Geçmiş)
+Arşiv Ekranı: Sola kaydırıp iptal edilen veya süresi dolan görevlerin listelendiği sayfa.
+
+Bu sayfadaki "GERİ YÜKLE" butonları, ana ekranla karışmaması ve göz yormaması için arka planı boş, sadece kırmızı çerçeveli (Outline) olarak tasarlanmıştır.
+
+3. Veritabanı ve Teknik Altyapı (Supabase)
+Sistem verileri cihaz hafızasından kurtarılıp Supabase (PostgreSQL) bulut sistemine bağlanmıştır. Üç ana tablo çalışır:
+
+Profiles: id, email, gender, height, weight, total_score, rank, cycle_length (kadınlar için).
+
+Tasks: Kullanıcının veya AI'ın oluşturduğu planlar. id, user_id, title, scheduled_time, status (active, completed, failed).
+
+Logs (Kayıtlar): Kullanıcının her sağa/sola kaydırma işleminin (Log) saat ve tarih bazlı tutulduğu, ileride "Sosyal Medya Mezuniyet Karnesi" oluşturmak için kullanılacak veri ambar.
+
+4. Tespit Edilen Riskler ve Geliştirme Önerileri
+Push Notification (Bildirim) Gereksinimi: Uygulamanın koçluk işlevini yerine getirebilmesi için kullanıcının kilit ekranına sert ve motive edici bildirimler (Örn: "Yürüyüş saatini 20 dakika geçtin.") gönderecek Expo Push Notifications entegrasyonu yapılmalıdır.
+
+Onboarding (İlk Karşılama) Eksikliği: Uygulamanın sert tavrını ve mantığını yeni kullanıcılara açıklayan 3-4 ekranlık bir karşılama akışı eklenmelidir.
+
+Yapay Zeka Yükleme Süresi: OpenAI API'den veri beklenirken ekranda statik bir bekleme ikonu yerine ("Bahanelerin çürütülüyor..." gibi) uygulamanın diline uygun dinamik yükleme ekranları tasarlanmalıdır.
+
+Çevrimdışı (Offline) Destek: İnternet erişiminin olmadığı durumlarda görevlerin tamamlanabilmesi için verilerin cihazda tutulup bağlantı sağlandığında Supabase ile eşitleneceği bir çevrimdışı senkronizasyon yapısı kurulmalıdır.

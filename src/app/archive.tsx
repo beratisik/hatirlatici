@@ -8,6 +8,7 @@ import {
   describeArchiveReason,
   formatRepeatSummary,
   formatTimeRange,
+  GOAL_TYPE_COLORS,
   isFinished,
   isPaused,
   useGoals,
@@ -92,9 +93,14 @@ function ArchivedGoalCard({
   const finished = isFinished(goal);
 
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, { borderLeftColor: GOAL_TYPE_COLORS[goal.type] }]}>
       <View style={styles.cardHeader}>
-        <Text style={styles.cardTitle}>{goal.title}</Text>
+        <View style={styles.cardTitleBlock}>
+          <Text style={[styles.cardKicker, { color: GOAL_TYPE_COLORS[goal.type] }]}>
+            {goal.type === 'coach' ? 'KOÇ' : 'ANIMSATICI'}
+          </Text>
+          <Text style={styles.cardTitle}>{goal.title}</Text>
+        </View>
         <View style={styles.cardHeaderRight}>
           <Text style={[styles.reasonText, { color: reason.color }]}>{reason.label}</Text>
           <GoalMenuButton onPress={onOpenMenu} />
@@ -119,7 +125,7 @@ function ArchivedGoalCard({
             <Text style={styles.badgeText}>Bitiş {goal.endDate}</Text>
           </View>
         )}
-        {goal.streak > 0 && (
+        {goal.type === 'coach' && goal.streak > 0 && (
           <View style={styles.badge}>
             <Text style={styles.streakBadgeText}>🔥 {goal.streak} seri korundu</Text>
           </View>
@@ -127,8 +133,8 @@ function ArchivedGoalCard({
       </View>
 
       {finished ? (
-        <TouchableOpacity style={styles.restoreButton} activeOpacity={0.85} onPress={onReport}>
-          <Text style={styles.restoreButtonLabel}>KARNE</Text>
+        <TouchableOpacity style={styles.reportButton} activeOpacity={0.85} onPress={onReport}>
+          <Text style={styles.reportButtonLabel}>KARNE</Text>
         </TouchableOpacity>
       ) : (
         <TouchableOpacity style={styles.restoreButton} activeOpacity={0.85} onPress={onRestore}>
@@ -203,10 +209,20 @@ const styles = StyleSheet.create({
     backgroundColor: '#101010',
     borderWidth: 1,
     borderColor: '#1E1E1E',
+    borderLeftWidth: 3,
     borderRadius: 14,
     padding: 16,
     gap: 8,
     opacity: 0.9,
+  },
+  cardTitleBlock: {
+    flex: 1,
+    gap: 3,
+  },
+  cardKicker: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.4,
   },
   cardHeader: {
     flexDirection: 'row',
@@ -253,16 +269,30 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
-  restoreButton: {
+  reportButton: {
     marginTop: 8,
     backgroundColor: '#C1121F',
-    borderWidth: 0,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  reportButtonLabel: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+  restoreButton: {
+    marginTop: 8,
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: '#C1121F',
     borderRadius: 10,
     paddingVertical: 12,
     alignItems: 'center',
   },
   restoreButtonLabel: {
-    color: '#FFFFFF',
+    color: '#C1121F',
     fontSize: 12,
     fontWeight: '800',
     letterSpacing: 0.8,

@@ -15,7 +15,14 @@ import { useRouter } from 'expo-router';
 
 import { PasswordField } from '@/components/password-field';
 import { GENDER_OPTIONS, useUser, type Gender } from '@/context/GoalContext';
-import { isValidPassword, PASSWORD_RULE_TEXT } from '@/lib/password';
+import {
+  EMAIL_RULE_TEXT,
+  isValidEmail,
+  isValidPassword,
+  isValidUsername,
+  PASSWORD_RULE_TEXT,
+  USERNAME_RULE_TEXT,
+} from '@/lib/password';
 
 // ---------------------------------------------------------------------------
 // Mock akış: Register -> Login -> Welcome -> Survey -> Result
@@ -97,12 +104,14 @@ function calculateProfile(answers: ProfileKey[]): ProfileKey {
 
 export default function App() {
   const router = useRouter();
-  const { user, setUser, isReady, isLoggedIn, login, profile, setProfile } = useUser();
+  const { user, registerAccount, authenticate, isReady, isLoggedIn, login, profile, setProfile } = useUser();
   const [screen, setScreen] = useState<Screen>('login');
 
   // Register form state
   const [registerName, setRegisterName] = useState('');
+  const [registerSurname, setRegisterSurname] = useState('');
   const [registerEmail, setRegisterEmail] = useState('');
+  const [registerUsername, setRegisterUsername] = useState('');
   const [registerPassword, setRegisterPassword] = useState('');
   const [registerConfirmPassword, setRegisterConfirmPassword] = useState('');
   const [registerGender, setRegisterGender] = useState<Gender | null>(null);
@@ -112,6 +121,8 @@ export default function App() {
   const [loginIdentifier, setLoginIdentifier] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
+  const [loginNotice, setLoginNotice] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
 
   // Survey state
   const [currentQuestion, setCurrentQuestion] = useState(0);
@@ -134,16 +145,34 @@ export default function App() {
   const registerPasswordsMatch =
     registerPassword.length > 0 && registerPassword === registerConfirmPassword;
   const registerPasswordValid = isValidPassword(registerPassword);
+  const registerEmailValid = isValidEmail(registerEmail);
+  const registerUsernameValid = isValidUsername(registerUsername);
   const canRegister =
     registerName.trim().length > 0 &&
-    registerEmail.trim().length > 0 &&
+    registerSurname.trim().length > 0 &&
+    registerEmailValid &&
+    registerUsernameValid &&
     registerPasswordValid &&
     registerPasswordsMatch &&
     registerGender !== null;
 
-  function handleRegister() {
-    if (!registerName.trim() || !registerEmail.trim() || !registerPassword.trim()) {
+  async function handleRegister() {
+    if (
+      !registerName.trim() ||
+      !registerSurname.trim() ||
+      !registerEmail.trim() ||
+      !registerUsername.trim() ||
+      !registerPassword.trim()
+    ) {
       setRegisterError('Lütfen tüm alanları doldur.');
+      return;
+    }
+    if (!isValidEmail(registerEmail)) {
+      setRegisterError(EMAIL_RULE_TEXT);
+      return;
+    }
+    if (!isValidUsername(registerUsername)) {
+      setRegisterError(USERNAME_RULE_TEXT);
       return;
     }
     if (!isValidPassword(registerPassword)) {
@@ -158,39 +187,76 @@ export default function App() {
       setRegisterError('Cinsiyet seçimi zorunlu.');
       return;
     }
-    setUser({
-      name: registerName.trim(),
-      email: registerEmail.trim(),
-      password: registerPassword,
-      avatarUri: null,
-      gender: registerGender,
-    });
-    setRegisterError('');
-    setScreen('login');
+    setAuthBusy(true);
+    try {
+      const created = await registerAccount({
+        name: registerName.trim(),
+        surname: registerSurname.trim(),
+        username: registerUsername.trim(),
+        email: registerEmail.trim().toLowerCase(),
+        password: registerPassword,
+        avatarUri: null,
+        gender: registerGender,
+      });
+      if (created === 'email') {
+        setRegisterError('Bu e-posta zaten kayıtlı.');
+        return;
+      }
+      if (created === 'username') {
+        setRegisterError('Bu kullanıcı adı alınmış.');
+        return;
+      }
+      if (created === 'confirm') {
+        setRegisterError('');
+        setLoginNotice(
+          'E-posta adresine doğrulama bağlantısı gönderildi. Onayladıktan sonra giriş yap.',
+        );
+        setScreen('login');
+        return;
+      }
+      if (created === 'error') {
+        setRegisterError('Kayıt tamamlanamadı. Bağlantını ve veritabanı kurulumunu kontrol et.');
+        return;
+      }
+      setRegisterError('');
+      setLoginNotice('');
+      setScreen('login');
+    } finally {
+      setAuthBusy(false);
+    }
   }
 
-  function handleLogin() {
+  async function handleLogin() {
     if (!loginIdentifier.trim() || !loginPassword.trim()) {
       setLoginError('Lütfen tüm alanları doldur.');
       return;
     }
-    if (!user) {
-      setLoginError('Önce kayıt olmalısın.');
-      return;
+    setAuthBusy(true);
+    try {
+      const result = await authenticate(loginIdentifier.trim(), loginPassword);
+      if (result === 'confirm') {
+        setLoginError('Hesabın duruyor. E-posta henüz onaylanmadı; şifre doğru olsa da giriş açılmaz.');
+        return;
+      }
+      if (result === 'error') {
+        setLoginError('Sunucuya ulaşılamadı. Bağlantını ve veritabanı kurulumunu kontrol et.');
+        return;
+      }
+      if (result !== 'ok') {
+        setLoginError('Kullanıcı adı, e-posta veya şifre hatalı.');
+        return;
+      }
+      setLoginError('');
+      setLoginNotice('');
+      login();
+      if (profile) {
+        router.replace({ pathname: '/home', params: { profile } });
+        return;
+      }
+      setScreen('welcome');
+    } finally {
+      setAuthBusy(false);
     }
-    const identifier = loginIdentifier.trim();
-    const matchesIdentifier = identifier === user.email || identifier === user.name;
-    if (!matchesIdentifier || loginPassword !== user.password) {
-      setLoginError('Kullanıcı adı, e-posta veya şifre hatalı.');
-      return;
-    }
-    setLoginError('');
-    login();
-    if (profile) {
-      router.replace({ pathname: '/home', params: { profile } });
-      return;
-    }
-    setScreen('welcome');
   }
 
   function handleGoToRegister() {
@@ -248,24 +314,63 @@ export default function App() {
 
       {screen === 'register' && (
         <FormScreen title="KAYIT OL">
-          <TextInput
-            value={registerName}
-            onChangeText={setRegisterName}
-            placeholder="İsim"
-            placeholderTextColor="#6B6B6B"
-            style={styles.input}
-            autoCapitalize="words"
-          />
-          <TextInput
-            value={registerEmail}
-            onChangeText={setRegisterEmail}
-            placeholder="E-posta"
-            placeholderTextColor="#6B6B6B"
-            style={styles.input}
-            keyboardType="email-address"
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
+          <View style={styles.fieldRow}>
+            <TextInput
+              value={registerName}
+              onChangeText={setRegisterName}
+              placeholder="İsim"
+              placeholderTextColor="#6B6B6B"
+              style={[styles.input, styles.fieldHalf]}
+              autoCapitalize="words"
+            />
+            <TextInput
+              value={registerSurname}
+              onChangeText={setRegisterSurname}
+              placeholder="Soyisim"
+              placeholderTextColor="#6B6B6B"
+              style={[styles.input, styles.fieldHalf]}
+              autoCapitalize="words"
+            />
+          </View>
+          <View style={styles.fieldRow}>
+            <View style={styles.fieldHalf}>
+              <TextInput
+                value={registerEmail}
+                onChangeText={setRegisterEmail}
+                placeholder="E-posta"
+                placeholderTextColor="#6B6B6B"
+                style={[
+                  styles.input,
+                  registerEmail.length > 0 && !registerEmailValid && styles.inputMismatch,
+                ]}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="email"
+              />
+              {registerEmail.length > 0 && !registerEmailValid && (
+                <Text style={styles.fieldError}>{EMAIL_RULE_TEXT}</Text>
+              )}
+            </View>
+            <View style={styles.fieldHalf}>
+              <TextInput
+                value={registerUsername}
+                onChangeText={setRegisterUsername}
+                placeholder="Kullanıcı adı"
+                placeholderTextColor="#6B6B6B"
+                style={[
+                  styles.input,
+                  registerUsername.length > 0 && !registerUsernameValid && styles.inputMismatch,
+                ]}
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="username"
+              />
+              {registerUsername.length > 0 && !registerUsernameValid && (
+                <Text style={styles.fieldError}>{USERNAME_RULE_TEXT}</Text>
+              )}
+            </View>
+          </View>
           <Text style={styles.sectionLabel}>CİNSİYET</Text>
           <View style={styles.genderRow}>
             {GENDER_OPTIONS.map((option) => {
@@ -316,11 +421,11 @@ export default function App() {
           )}
           {!!registerError && <Text style={styles.errorText}>{registerError}</Text>}
           <TouchableOpacity
-            style={[styles.button, !canRegister && styles.buttonDisabled]}
+            style={[styles.button, (!canRegister || authBusy) && styles.buttonDisabled]}
             activeOpacity={0.85}
             onPress={handleRegister}
-            disabled={!canRegister}>
-            <Text style={styles.buttonLabel}>KAYIT OL</Text>
+            disabled={!canRegister || authBusy}>
+            <Text style={styles.buttonLabel}>{authBusy ? 'KAYDEDİLİYOR' : 'KAYIT OL'}</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.linkHit} activeOpacity={0.7} onPress={handleGoToLogin}>
             <Text style={styles.linkText}>
@@ -338,18 +443,24 @@ export default function App() {
             placeholder="Kullanıcı Adı / E-posta"
             placeholderTextColor="#6B6B6B"
             style={styles.input}
-            keyboardType="email-address"
             autoCapitalize="none"
             autoCorrect={false}
+            autoComplete="username"
+            textContentType="username"
           />
           <PasswordField
             value={loginPassword}
             onChangeText={setLoginPassword}
             placeholder="Şifre"
           />
+          {!!loginNotice && <Text style={styles.noticeText}>{loginNotice}</Text>}
           {!!loginError && <Text style={styles.errorText}>{loginError}</Text>}
-          <TouchableOpacity style={styles.button} activeOpacity={0.85} onPress={handleLogin}>
-            <Text style={styles.buttonLabel}>GİRİŞ YAP</Text>
+          <TouchableOpacity
+            style={[styles.button, authBusy && styles.buttonDisabled]}
+            activeOpacity={0.85}
+            onPress={handleLogin}
+            disabled={authBusy}>
+            <Text style={styles.buttonLabel}>{authBusy ? 'GİRİLİYOR' : 'GİRİŞ YAP'}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.secondaryButton}
@@ -464,6 +575,21 @@ const styles = StyleSheet.create({
     marginTop: 40,
     gap: 14,
   },
+  fieldRow: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'flex-start',
+  },
+  fieldHalf: {
+    flex: 1,
+    gap: 6,
+  },
+  fieldError: {
+    color: '#FF5C5C',
+    fontSize: 11,
+    fontWeight: '600',
+    lineHeight: 15,
+  },
   sectionLabel: {
     color: '#8A8A8A',
     fontSize: 12,
@@ -510,6 +636,12 @@ const styles = StyleSheet.create({
     color: '#FF5C5C',
     fontSize: 13,
     fontWeight: '600',
+  },
+  noticeText: {
+    color: '#C9C9C9',
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 18,
   },
   hintText: {
     color: '#8A8A8A',
