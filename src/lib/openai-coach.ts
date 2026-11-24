@@ -87,8 +87,7 @@ export function buildCoachSystemPrompt(tasks: CoachTaskSnapshot[], voice: string
 }
 
 function readApiKey(): string {
-  const env = process.env as Record<string, string | undefined>;
-  return env.EXPO_PUBLIC_OPENAI_API_KEY?.trim() ?? '';
+  return (process.env.EXPO_PUBLIC_OPENAI_API_KEY ?? '').trim();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

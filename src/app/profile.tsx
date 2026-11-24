@@ -22,8 +22,7 @@ const SECRET_TAPS = 7;
 const SECRET_WINDOW_MS = 1800;
 
 function adminPassword() {
-  const env = process.env as Record<string, string | undefined>;
-  return env.EXPO_PUBLIC_ADMIN_PASSWORD?.trim() || 'admin123';
+  return (process.env.EXPO_PUBLIC_ADMIN_PASSWORD ?? '').trim() || 'admin123';
 }
 
 export default function ProfileScreen() {
