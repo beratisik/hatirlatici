@@ -17,7 +17,7 @@ import { useRouter } from 'expo-router';
 
 import { describeGender, getRank, useUser } from '@/context/GoalContext';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.3';
 const SECRET_TAPS = 7;
 const SECRET_WINDOW_MS = 1800;
 
