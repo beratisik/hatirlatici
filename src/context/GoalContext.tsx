@@ -34,6 +34,7 @@ import {
 import { emailTaken, foldIdentity, identifierMatches, secretsMatch, usernameTaken } from '@/lib/password';
 import {
   changeRemotePassword,
+  deleteRemoteAccount,
   loadRemoteBundle,
   pauseRemoteWrites,
   queueProfile,
@@ -605,6 +606,7 @@ type GoalContextValue = {
   updateAvatar: (uri: string) => void;
   login: () => void;
   logout: () => void;
+  deleteAccount: () => Promise<'ok' | 'error'>;
   setProfile: (profile: string) => void;
 
   water: WaterSummary;
@@ -1360,6 +1362,37 @@ export function GoalProvider({ children }: { children: ReactNode }) {
     })();
   }, []);
 
+  const deleteAccount = useCallback(async (): Promise<'ok' | 'error'> => {
+    try {
+      if (isRemoteEnabled()) {
+        const res = await deleteRemoteAccount();
+        if (res !== 'ok') return 'error';
+      }
+      allowRemoteWrite.current = false;
+      pauseRemoteWrites();
+      skipPersist.current = true;
+      setIsLoggedIn(false);
+      setUserState(null);
+      setAccounts([]);
+      setGoals([]);
+      setScore(0);
+      setProfileState(null);
+      setWaterSettings(null);
+      setWaterDay({ date: todayIso(), entries: [] });
+      await AsyncStorage.multiRemove([
+        STORAGE_KEY,
+        '@hatirlatici/cycle',
+        '@hatirlatici/coach-threads',
+        '@hatirlatici/coach-chat',
+      ]);
+      return 'ok';
+    } catch {
+      return 'error';
+    } finally {
+      skipPersist.current = false;
+    }
+  }, []);
+
   const setProfile = useCallback((nextProfile: string) => {
     setProfileState(nextProfile);
   }, []);
@@ -1413,6 +1446,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       updateAvatar,
       login,
       logout,
+      deleteAccount,
       setProfile,
       water,
       saveWaterSettings,
@@ -1444,6 +1478,7 @@ export function GoalProvider({ children }: { children: ReactNode }) {
       updateAvatar,
       login,
       logout,
+      deleteAccount,
       setProfile,
       water,
       saveWaterSettings,
@@ -1484,6 +1519,7 @@ export function useUser() {
     isLoggedIn,
     login,
     logout,
+    deleteAccount,
     profile,
     setProfile,
   } = useGoals();
@@ -1499,6 +1535,7 @@ export function useUser() {
     isLoggedIn,
     login,
     logout,
+    deleteAccount,
     profile,
     setProfile,
   };

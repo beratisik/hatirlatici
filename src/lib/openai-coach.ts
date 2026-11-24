@@ -12,6 +12,11 @@ import {
 } from '@/context/GoalContext';
 
 import { applyCurrentTasks, loadCoachVoice } from '@/lib/coach-prompt';
+import {
+  loadTokenStats,
+  recordApiError,
+  recordTokenUsage,
+} from '@/lib/coach-analytics';
 
 const MODEL = 'gpt-4o-mini';
 const DAILY: RepeatConfig = { unit: 'gun', interval: 1 };
@@ -180,13 +185,29 @@ function parseCoachPayload(
   return { assistantText: message, actions: parseActions(parsed.actions, knownIds) };
 }
 
-async function completeChat(
+export async function completeChat(
   messages: OpenAIChatMessage[],
   signal?: AbortSignal,
 ): Promise<string> {
   const apiKey = readApiKey();
   if (!apiKey) {
-    throw new Error('OpenAI anahtarı yok. .env dosyasına EXPO_PUBLIC_OPENAI_API_KEY ekle.');
+    const err = 'OpenAI anahtarı yok. .env dosyasına EXPO_PUBLIC_OPENAI_API_KEY ekle.';
+    await recordApiError(err);
+    throw new Error(err);
+  }
+
+  // Token bütçe tavanı kontrolü
+  try {
+    const stats = await loadTokenStats();
+    if (stats.tokenCap > 0 && stats.totalTokens >= stats.tokenCap) {
+      const capMsg = `Token bütçe limiti aşıldı! (${stats.totalTokens}/${stats.tokenCap}). Admin panelinden limiti artırabilirsiniz.`;
+      await recordApiError(capMsg);
+      throw new Error(capMsg);
+    }
+  } catch (capErr) {
+    if (capErr instanceof Error && capErr.message.includes('Token bütçe limiti')) {
+      throw capErr;
+    }
   }
 
   let response: Response;
@@ -207,21 +228,65 @@ async function completeChat(
     });
   } catch (caught) {
     if (signal?.aborted) throw caught;
-    throw new Error('OpenAI’ye ulaşılamadı. Anahtarı ve bağlantıyı kontrol et.');
+    const err = 'OpenAI’ye ulaşılamadı. Anahtarı ve internet bağlantısını kontrol et.';
+    await recordApiError(err);
+    throw new Error(err);
   }
 
   const payload = (await response.json()) as {
     error?: { message?: string };
     choices?: { message?: { content?: string | null } }[];
+    usage?: {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      total_tokens?: number;
+    };
   };
 
   if (!response.ok) {
-    throw new Error(payload.error?.message || 'Koç şu an cevap veremedi.');
+    const errMsg = payload.error?.message || `OpenAI isteği başarısız oldu (${response.status}).`;
+    await recordApiError(`OpenAI (${response.status}): ${errMsg}`);
+    throw new Error(errMsg);
+  }
+
+  // Token kullanımını kaydet
+  if (payload.usage) {
+    try {
+      await recordTokenUsage(
+        payload.usage.prompt_tokens ?? 0,
+        payload.usage.completion_tokens ?? 0,
+      );
+    } catch {
+      // Analytics sessiz hata
+    }
   }
 
   const content = payload.choices?.[0]?.message?.content;
-  if (!content?.trim()) throw new Error('Koç boş cevap verdi.');
+  if (!content?.trim()) {
+    const emptyErr = 'Koç boş cevap verdi.';
+    await recordApiError(emptyErr);
+    throw new Error(emptyErr);
+  }
   return content;
+}
+
+export async function testCoachPrompt(
+  customVoice: string,
+  userMessage: string,
+  signal?: AbortSignal,
+): Promise<{ assistantText: string; actions: CoachAction[] }> {
+  const content = await completeChat(
+    [
+      { role: 'system', content: applyCurrentTasks(customVoice, '[]') },
+      { role: 'user', content: userMessage },
+    ],
+    signal,
+  );
+  const parsed = parseCoachPayload(content, new Set());
+  return {
+    assistantText: parsed?.assistantText || content,
+    actions: parsed?.actions ?? [],
+  };
 }
 
 export async function requestCoachTurn(

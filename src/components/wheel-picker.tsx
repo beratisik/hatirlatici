@@ -18,7 +18,7 @@ export function WheelPicker({
   onSelect: (index: number) => void;
   disabledIndexes?: Set<number>;
 }) {
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<any>(null);
 
   useEffect(() => {
     // Modal her açıldığında (component yeniden mount olduğunda) doğru satıra atla.

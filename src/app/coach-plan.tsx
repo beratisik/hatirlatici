@@ -195,7 +195,7 @@ export default function CoachPlanScreen() {
   const router = useRouter();
   const { addGoal, updateGoal, deleteGoal, goals } = useGoals();
   const listRef = useRef<FlatList<ChatBubble>>(null);
-  const inputRef = useRef<TextInput>(null);
+  const inputRef = useRef<any>(null);
   const abortRef = useRef<AbortController | null>(null);
   const historyRef = useRef<OpenAIChatMessage[]>([]);
   const sessionRef = useRef(0);
@@ -484,7 +484,7 @@ export default function CoachPlanScreen() {
                   <Text style={styles.typingText}>Koç yazıyor...</Text>
                 </View>
               </View>
-            ) : null
+            ) : undefined
           }
         />
 

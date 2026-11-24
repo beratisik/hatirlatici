@@ -374,3 +374,20 @@ export async function pullUserColumn(
   if (value == null) return { status: 'empty' };
   return { status: 'value', value };
 }
+
+export async function deleteRemoteAccount(): Promise<'ok' | 'error'> {
+  if (!supabase) return 'error';
+  try {
+    const { error } = await supabase.rpc('delete_user_account');
+    if (error) {
+      console.warn('delete_user_account error:', error.message);
+      return 'error';
+    }
+    await supabase.auth.signOut();
+    return 'ok';
+  } catch (e) {
+    console.warn('deleteRemoteAccount error:', e);
+    return 'error';
+  }
+}
+

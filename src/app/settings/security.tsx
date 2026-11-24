@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -18,12 +19,13 @@ import { isValidPassword, PASSWORD_RULE_TEXT } from '@/lib/password';
 
 export default function SecurityScreen() {
   const router = useRouter();
-  const { updatePassword } = useUser();
+  const { updatePassword, deleteAccount } = useUser();
 
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [message, setMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
   const passwordsMatch = newPassword.length > 0 && newPassword === confirmPassword;
@@ -66,6 +68,33 @@ export default function SecurityScreen() {
     } finally {
       setSaving(false);
     }
+  }
+
+  function handleDeleteAccount() {
+    Alert.alert(
+      'Hesabını Sil',
+      'Hesabını ve uygulamadaki tüm verilerini (hedefler, seri, puanlar) kalıcı olarak silmek istediğinden emin misin? Bu işlem geri alınamaz.',
+      [
+        { text: 'Vazgeç', style: 'cancel' },
+        {
+          text: 'Evet, Sil',
+          style: 'destructive',
+          onPress: async () => {
+            setDeleting(true);
+            try {
+              const res = await deleteAccount();
+              if (res === 'ok') {
+                router.replace('/');
+              } else {
+                Alert.alert('Hata', 'Hesap silinirken bir sorun oluştu. Bağlantını kontrol et.');
+              }
+            } finally {
+              setDeleting(false);
+            }
+          },
+        },
+      ],
+    );
   }
 
   return (
@@ -133,6 +162,23 @@ export default function SecurityScreen() {
               onPress={handleUpdatePassword}
               disabled={!canSubmit || saving}>
               <Text style={styles.updateButtonLabel}>{saving ? 'KAYDEDİLİYOR' : 'ŞİFREYİ KAYDET'}</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Apple App Store Zorunlu: Hesap Silme Alanı */}
+          <View style={styles.dangerSection}>
+            <Text style={styles.dangerLabel}>HESABI SİL</Text>
+            <Text style={styles.dangerSubtitle}>
+              Hesabını ve uygulamadaki tüm kayıtlarını (hedefler, seri, puanlar ve döngü verileri) kalıcı olarak siler.
+            </Text>
+            <TouchableOpacity
+              style={[styles.deleteButton, deleting && styles.updateButtonDisabled]}
+              activeOpacity={0.85}
+              onPress={handleDeleteAccount}
+              disabled={deleting}>
+              <Text style={styles.deleteButtonLabel}>
+                {deleting ? 'HESAP SİLİNİYOR...' : 'HESABIMI KALICI OLARAK SİL'}
+              </Text>
             </TouchableOpacity>
           </View>
         </ScrollView>
@@ -216,6 +262,40 @@ const styles = StyleSheet.create({
   updateButtonLabel: {
     color: '#FFFFFF',
     fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+  dangerSection: {
+    marginTop: 20,
+    paddingTop: 24,
+    borderTopWidth: 1,
+    borderTopColor: '#222222',
+    gap: 12,
+  },
+  dangerLabel: {
+    color: '#FF5C5C',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 1.4,
+  },
+  dangerSubtitle: {
+    color: '#8A8A8A',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  deleteButton: {
+    backgroundColor: 'transparent',
+    borderWidth: 1.5,
+    borderColor: '#C1121F',
+    paddingVertical: 16,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+  },
+  deleteButtonLabel: {
+    color: '#FF5C5C',
+    fontSize: 14,
     fontWeight: '800',
     letterSpacing: 0.8,
   },

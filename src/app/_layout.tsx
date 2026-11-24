@@ -20,7 +20,7 @@ export default function RootLayout() {
               headerShown: false,
               contentStyle: { backgroundColor: '#050505' },
             }}>
-            <Stack.Screen name="admin-dashboard" options={{ href: null }} />
+            <Stack.Screen name="admin-dashboard" />
           </Stack>
         </GoalProvider>
       </ThemeProvider>

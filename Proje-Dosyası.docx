@@ -84,3 +84,6 @@ Onboarding (İlk Karşılama) Eksikliği: Uygulamanın sert tavrını ve mantı�
 Yapay Zeka Yükleme Süresi: OpenAI API'den veri beklenirken ekranda statik bir bekleme ikonu yerine ("Bahanelerin çürütülüyor..." gibi) uygulamanın diline uygun dinamik yükleme ekranları tasarlanmalıdır.
 
 Çevrimdışı (Offline) Destek: İnternet erişiminin olmadığı durumlarda görevlerin tamamlanabilmesi için verilerin cihazda tutulup bağlantı sağlandığında Supabase ile eşitleneceği bir çevrimdışı senkronizasyon yapısı kurulmalıdır.
+
+
+sql şifresi = Ma9Jg2Qs0SPb9Cw2

@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { FlatList, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Swipeable } from 'react-native-gesture-handler';
+import Swipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -543,7 +543,7 @@ function CoachCard({
   onArchive: (id: string) => void;
   onOpenMenu: () => void;
 }) {
-  const swipeableRef = useRef<Swipeable>(null);
+  const swipeableRef = useRef<SwipeableMethods>(null);
   const schedule = [scheduleLine(goal), slotLabel(goal)].filter(Boolean).join(' · ');
   const handledToday = isHandledToday(goal);
   const completedToday = isCompletedToday(goal);
